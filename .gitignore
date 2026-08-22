@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+.env
+*.sqlite3
+qshield_twin.db
+logs/
+
+# Node
+node_modules/
+dist/
+build/
+
+# VSCode
+.vscode/
+
+# Docker
+*.log
+.env.local
+
+# Virtual environments
+.venv/
+.venv313/
