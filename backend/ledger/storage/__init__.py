@@ -1,0 +1,1 @@
+"""Ledger storage adapters."""
