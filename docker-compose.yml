@@ -1,18 +1,62 @@
-version: "3.8"
+# Docker Compose for local development.
+#
+# NOTE: this runs the Vite dev server and uvicorn with a bind-mounted source
+# tree. It is intended for development, not production.
+#
+#   cp .env.example .env        # then edit SECRET_KEY etc.
+#   docker compose up --build
+#
+# Requires the Docker Compose v2 plugin (`docker compose`, not `docker-compose`).
+
 services:
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: qshield-backend
     ports:
       - "8000:8000"
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: sqlite:////data/qshield_twin.db
+      CORS_ORIGINS: '["http://localhost:5173"]'
+      ALLOWED_HOSTS: '["localhost","127.0.0.1"]'
+      # Shared API token. Empty by default so local development stays open; set
+      # API_TOKEN (e.g. in .env) to require it. Kept identical for backend and
+      # frontend so the dev-server proxy can inject it (the browser never sees it).
+      API_TOKEN: ${API_TOKEN:-}
     volumes:
-      - ./backend:/app
-    env_file:
-      - .env
+      - backend-data:/data
+      - ./backend:/app/backend
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health').status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: qshield-frontend
     ports:
       - "5173:5173"
+    environment:
+      VITE_API_PROXY_TARGET: http://backend:8000
+      # Server-side token used by the Vite dev proxy to authenticate proxied /api
+      # requests. It is read by the Node dev server, never exposed to the browser.
+      QSHIELD_API_TOKEN: ${API_TOKEN:-}
     volumes:
       - ./frontend:/app
-    environment:
-      - CHOKIDAR_USEPOLLING=true
+      # Preserve the container's node_modules over the bind mount.
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  backend-data:

@@ -13,6 +13,4 @@ router = APIRouter(tags=["health"])
 def health_check() -> StandardResponse:
     """Return a simple service health payload."""
 
-    response = StandardResponse(status="ok", message="Service healthy", data={"status": "healthy"})
-    response.model_dump()
-    return response
+    return StandardResponse(status="ok", message="Service healthy", data={"status": "healthy"})

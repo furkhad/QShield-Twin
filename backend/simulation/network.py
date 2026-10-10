@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import math
+import random
+from math import ceil
 from typing import Dict, List
 
 import networkx as nx
-import random
-import math
-from math import ceil
 
 from backend.simulation.device import SimDevice
 
@@ -29,9 +29,9 @@ class NetworkGraph:
         """Recompute edges based on communication radius of devices."""
         self.graph.remove_edges_from(list(self.graph.edges()))
         nodes = list(self.graph.nodes(data=True))
-        for i, (id1, data1) in enumerate(nodes):
+        for i, (_id1, data1) in enumerate(nodes):
             d1: SimDevice = data1["device"]
-            for id2, data2 in nodes[i + 1 :]:
+            for _id2, data2 in nodes[i + 1 :]:
                 d2: SimDevice = data2["device"]
                 if d1.distance_to(d2) <= max(d1.comms_radius, d2.comms_radius):
                     self.graph.add_edge(d1.device_id, d2.device_id)
@@ -96,7 +96,6 @@ class NetworkGraph:
                 idx += 1
 
     def _populate_cluster(self, devices: List[SimDevice], centers: int = 3, spread: float = 20.0) -> None:
-        n = len(devices)
         # choose cluster centers
         center_points = [(random.uniform(0, 500), random.uniform(0, 500)) for _ in range(centers)]
         for i, d in enumerate(devices):

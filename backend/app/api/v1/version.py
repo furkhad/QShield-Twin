@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from backend.settings import get_settings
 from backend.app.schemas.response import StandardResponse
+from backend.settings import get_settings
 
 router = APIRouter(tags=["version"])
 

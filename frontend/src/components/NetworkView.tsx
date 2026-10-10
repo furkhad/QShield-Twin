@@ -40,7 +40,7 @@ export default function NetworkView() {
   const [playing, setPlaying] = useState(true)
   const [playIndex, setPlayIndex] = useState<number | null>(null)
 
-  useWebSocket('ws://localhost:8000/api/v1/ws/stream', (msg) => {
+  useWebSocket((msg) => {
     // snapshot message
     if (msg && msg.devices) {
       const next: Record<string, Node> = {}

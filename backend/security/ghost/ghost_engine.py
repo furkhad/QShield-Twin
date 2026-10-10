@@ -11,12 +11,12 @@ Attack strength controls packet generation rate and neighbor influence intensity
 
 from __future__ import annotations
 
-import time
-import threading
-import random
 import math
-from dataclasses import dataclass, field
-from typing import Dict, List, Callable, Tuple
+import random
+import threading
+import time
+from dataclasses import dataclass
+from typing import Callable, Dict, List
 from uuid import uuid4
 
 
@@ -222,8 +222,24 @@ class GhostEngine:
                 if g.attacker_id == attacker_id:
                     g.active = False
             stats = self.attacks.get(attacker_id)
-            if stats and stats.end_time is None:
-                stats.end_time = time.time()
+            if stats:
+                if stats.end_time is None:
+                    stats.end_time = time.time()
+                # Recompute detections now so callers get accurate statistics
+                # immediately, without waiting for the background attack thread
+                # to reach the end of its duration.
+                detected = sum(
+                    1
+                    for g in self.ghosts.values()
+                    if g.attacker_id == attacker_id and g.detected_at is not None
+                )
+                stats.detected_count = detected
+                if stats.ghost_count > 0:
+                    stats.detection_rate = detected / stats.ghost_count
+                    stats.success_rate = (stats.ghost_count - detected) / stats.ghost_count
+                else:
+                    stats.detection_rate = 0.0
+                    stats.success_rate = 0.0
 
         if self.event_cb:
             self.event_cb({"type": "attack_stopped", "attacker": attacker_id})

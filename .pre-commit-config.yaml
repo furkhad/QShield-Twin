@@ -1,13 +1,21 @@
+# Pre-commit hooks for QShield Twin.
+# Formatting/linting is handled by Ruff (configured in pyproject.toml); the
+# previous black/isort/flake8 hooks are intentionally dropped to keep a single
+# tool. Install with: `uv tool install pre-commit && pre-commit install`.
 repos:
-  - repo: https://github.com/psf/black
-    rev: 24.7.0
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
     hooks:
-      - id: black
-  - repo: https://github.com/PyCQA/isort
-    rev: 5.12.0
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
     hooks:
-      - id: isort
-  - repo: https://gitlab.com/pycqa/flake8
-    rev: 6.1.0
-    hooks:
-      - id: flake8
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format

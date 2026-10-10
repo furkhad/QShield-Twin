@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-import uuid
 
-from sqlalchemy import Column, String, DateTime, Float, Text, ForeignKey
+from sqlalchemy import Column, DateTime, Float, ForeignKey, String, Text
 
 from backend.base import Base
-
-
-def gen_uuid() -> str:
-    return str(uuid.uuid4())
+from backend.models._common import gen_uuid, utcnow
 
 
 class TrustRecord(Base):
@@ -23,4 +19,4 @@ class TrustRecord(Base):
     device_id: str = Column(String(36), ForeignKey("devices.id"), nullable=False)
     score: float = Column(Float, nullable=False, default=0.0)
     reason: str = Column(Text, nullable=True)
-    created_at: datetime = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: datetime = Column(DateTime, default=utcnow, nullable=False)

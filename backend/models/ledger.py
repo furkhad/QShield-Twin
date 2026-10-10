@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-import uuid
 
-from sqlalchemy import Column, String, DateTime, Integer, Text
+from sqlalchemy import Column, DateTime, Integer, String, Text
 
 from backend.base import Base
-
-
-def gen_uuid() -> str:
-    return str(uuid.uuid4())
+from backend.models._common import gen_uuid, utcnow
 
 
 class LedgerEntry(Base):
@@ -28,4 +24,4 @@ class LedgerEntry(Base):
     payload: str = Column(Text, nullable=False)
     entry_hash: str = Column(String(128), nullable=True)
     previous_hash: str = Column(String(128), nullable=True)
-    created_at: datetime = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: datetime = Column(DateTime, default=utcnow, nullable=False)

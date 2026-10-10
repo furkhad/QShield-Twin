@@ -11,10 +11,6 @@ from fastapi.responses import JSONResponse
 
 from backend.app.core.exceptions import (
     APIException,
-    ValidationException,
-    AuthenticationException,
-    AuthorizationException,
-    NotFoundException,
 )
 
 logger = logging.getLogger(__name__)

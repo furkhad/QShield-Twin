@@ -71,49 +71,88 @@ The SecureAccess scenario uses access-control terminology such as:
 - Emergency Exit Controller
 - Access-Control Sensor
 
-The configured attack scenario can also introduce suspicious identities such as:
-
-- `door-controller-001-copy`
-- `door-controller-001-clone`
-- `fake-reader-01`
-- other ghost-style identities
+The configured attack scenario can also introduce suspicious identities. These
+carry **neutral names** (for example `access-node-0001`): they are distinguished
+only by observable behaviour — a spoofed proof-of-proximity measurement, a shared
+(cloned) credential, elevated traffic and repeated signature failures — not by any
+name or label.
 
 ## Technical Honesty
 
 - The PQC layer is a simulated lattice-based cryptography interface, not production Kyber or Dilithium.
 - The proximity layer is software-simulated ToF verification, not hardware-grade ranging.
-- The ledger is a local 8-shard hash-based audit ledger, not a blockchain or distributed consensus network.
+- The ledger is a local 8-shard hash-chained, tamper-evident audit ledger, not a blockchain or distributed consensus network. Use `GET /api/v1/security/ledger/integrity` to verify it.
 - The demo metrics are simulation results from a configured scenario, not real-world deployment accuracy.
+- Detection uses a transparent **feature-based** detector (`ghost-detector/2.0`, in `backend/security/detection/`) that reads only observable telemetry — never scenario labels, names or ids. It is evaluated on held-out scenario distributions, including a deliberately hard "stealth" suite where its recall is honestly **0%**. Reported precision/recall still characterise the simulator, not real-world performance. Run `uv run python -m backend.security.detection.run_evaluation` to reproduce.
+- Missing, stale, malformed or contradictory telemetry is reported as an explicit **unknown** outcome, not a benign pass. A security-sensitive access-control join with unknown telemetry is escalated to `challenge` (not accepted), and unknown events are excluded from the confusion matrix so they are never counted as true negatives.
+- API/WebSocket authentication is an **opt-in shared token** (`API_TOKEN`); when unset (local development) the API is open. Production requires the token (validated at startup). The token is held **server-side** only (the Vite dev proxy in development, a reverse proxy in production, via a non-`VITE_` variable) and is **never** shipped to the browser — a `VITE_`-prefixed value is public. This is a deployment-level gate, **not** user authentication (no RBAC). Rate limiting is in-process, not an edge-grade limiter.
 
 ## Repository Layout
 
 - `backend/` FastAPI backend, digital twin, security pipeline, ledger, analytics, validation.
+- `backend/security/detection/` feature-based ghost detector + independent evaluation harness (`run_evaluation`).
 - `frontend/` React + TypeScript + Vite dashboard.
 - `tests/` backend and security tests.
 - `backend/validation/security_demo.py` scripted SecureAccess demonstration.
 
+## Prerequisites (Arch Linux)
+
+- Python **3.12+** and [`uv`](https://docs.astral.sh/uv/): `sudo pacman -S python uv`
+  (or `curl -LsSf https://astral.sh/uv/install.sh | sh`).
+- Node.js **20+** with npm (Bundled with `sudo pacman -S nodejs npm`).
+- Optional: Docker with the Compose v2 plugin (`docker compose`).
+
 ## Run Backend
 
 ```bash
-pip install -r requirements.txt
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+uv sync                                # install deps from uv.lock
+uv run uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+Or use the helper script: `./scripts/start_backend.sh`.
 
 ## Run Frontend
 
 ```bash
 cd frontend
-npm install
-npm run dev
+npm ci            # reproducible install from package-lock.json
+npm run dev       # dev server on http://localhost:5173
+```
+
+The dev server proxies `/api` (and the WebSocket) to the backend
+(`VITE_API_PROXY_TARGET`, default `http://localhost:8000`), so no CORS setup is
+needed. Copy `frontend/.env.example` to `frontend/.env.local` to override the
+API/WebSocket URLs.
+
+Other frontend commands:
+
+```bash
+npm run typecheck   # tsc --noEmit
+npm run build       # production bundle in dist/
 ```
 
 ## Run the Security Demonstration
 
 ```bash
-python -m backend.validation.security_demo
+uv run python -m backend.validation.security_demo
 ```
 
 The demo runs a configured access-control scenario with legitimate devices and simulated ghost identities, then prints the resulting metrics and writes a JSON report to `logs/secureaccess_demo_results.json`.
+
+## Reproducible Experiments
+
+Scenario runs accept an optional `seed`. When set, all stochastic components
+(ghost behaviour, proximity noise) and the exported analytics metadata are
+reproducible, so a result set can be re-run and audited:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/simulation/scenario/medium_sybil_attack \
+  -H 'Content-Type: application/json' \
+  -d '{"device_count": 100, "ghost_count": 20, "seed": 42}'
+```
+
+Exported analytics include `metric_source: "simulation"`, the `seed`, the
+scenario name, and the software version.
 
 ## API Endpoints
 
@@ -128,6 +167,7 @@ Core endpoints used by the dashboard and demo:
 - `POST /api/v1/security/attack/start`
 - `POST /api/v1/security/attack/stop`
 - `GET /api/v1/security/ledger`
+- `GET /api/v1/security/ledger/integrity`
 - `GET /api/v1/security/trust`
 - `GET /api/v1/security/analytics`
 - `GET /api/v1/security/verification/metrics`
@@ -138,10 +178,31 @@ Other existing simulation and network endpoints remain available for the digital
 ## Testing
 
 ```bash
-pytest -q
+uv run pytest          # full test suite (isolated temp database)
+uv run ruff check .    # lint
 ```
 
-The test suite includes the original backend checks plus access-control coverage for legitimate joins, clone detection, the demo scenario, and API endpoints.
+The test suite covers configuration validation, the access-control and security
+pipeline, research-metric correctness (ground-truth vs. detector separation and
+seed reproducibility), ledger integrity/tamper detection, and request
+validation. Tests never touch the developer's real `qshield_twin.db`.
+
+## Docker
+
+```bash
+cp .env.example .env    # set SECRET_KEY etc. if you plan to run in production mode
+docker compose up --build
+```
+
+Backend on `:8000`, frontend on `:5173`. This requires the Compose **v2**
+plugin (`docker compose`). The backend image runs as a non-root user and ships a
+container healthcheck. See `docs/ARCHITECTURE.md` for production guidance.
+
+## Documentation
+
+- `docs/ARCHITECTURE.md` — components and data flow.
+- `docs/ENGINEERING_AUDIT.md` — what was changed and why, with evidence.
+- `SECURITY_FRAMEWORK_IMPLEMENTATION.md`, `SECURITY_QUICK_START.md` — security notes.
 
 ## Limitations
 

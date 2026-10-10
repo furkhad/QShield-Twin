@@ -80,7 +80,6 @@ export default function PresentationMode() {
       const analytics = scenarioPayload.analytics || {}
       const trust = scenarioPayload.trust || {}
       const ledger = scenarioPayload.ledger || {}
-      const verification = scenarioPayload.security_status?.analytics || {}
 
       setResults({
         detection_metrics: {
@@ -92,7 +91,7 @@ export default function PresentationMode() {
         processed_joins: scenarioPayload.processed_joins || 0,
         ghost_nodes: { total: scenarioPayload.ghost_nodes || 0 },
         ledger_stats: { total_entries: ledger.total_entries || 0 },
-        verification_metrics: { average_time: verification.performance?.average_verification_time_ms ?? 0 },
+        verification_metrics: { average_time: analytics.performance?.average_verification_time_ms ?? 0 },
         scenario: scenarioPayload.scenario || selectedScenario,
         attack: scenarioPayload.attack || {},
       })
@@ -203,7 +202,7 @@ export default function PresentationMode() {
       {/* Steps Timeline */}
       <div className="space-y-3">
         <h3 className="text-lg font-semibold text-slate-100">Execution Timeline</h3>
-        
+
         <div className="space-y-2 max-h-96 overflow-y-auto">
           <AnimatePresence>
             {steps.map((step, index) => (

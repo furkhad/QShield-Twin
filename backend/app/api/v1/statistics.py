@@ -5,12 +5,11 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from backend.app.schemas.response import StandardResponse
-from backend.digital_twin.manager import DigitalTwinManager
-from backend.simulation.environment import SimConfig
+from backend.digital_twin.manager import get_manager
 
 router = APIRouter(tags=["statistics"])
 
-_manager = DigitalTwinManager(config=SimConfig())
+_manager = get_manager()
 
 
 @router.get("/statistics", response_model=StandardResponse)

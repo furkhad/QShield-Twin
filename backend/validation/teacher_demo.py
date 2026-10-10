@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import sys
-import time
 from typing import Any, Callable
 
 from backend.security.orchestrator import SecurityOrchestrator
-
 
 LEGITIMATE_DEVICE_COUNT = 8
 GHOST_DEVICE_COUNT = 6
@@ -128,18 +126,10 @@ def simulate_attack(orchestrator: SecurityOrchestrator) -> dict[str, Any]:
     metric("Attack intensity", attack["intensity"])
     metric("Attack start", "recorded by GhostEngine")
 
-    for ghost in orchestrator.ghost.list_ghosts_by_attacker(ATTACKER_ID):
-        orchestrator.receive_join(
-            {
-                "device_id": ghost.device_id,
-                "name": ghost.name,
-                "device_type": "ghost",
-                "x": ghost.x,
-                "y": ghost.y,
-                "malicious": True,
-            }
-        )
-
+    # ``start_attack`` already scores every spawned identity through the join
+    # pipeline using observable Sybil telemetry (shared credential, co-located
+    # spoofed proximity, failing signatures, elevated packet rate), so no manual
+    # re-join is needed here.
     orchestrator.stop_attack(ATTACKER_ID)
     wait_for_attack_completion(orchestrator, ATTACKER_ID)
     stats = orchestrator.ghost.get_attack_stats(ATTACKER_ID)

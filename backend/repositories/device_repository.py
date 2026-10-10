@@ -6,8 +6,8 @@ from typing import Iterable
 
 from sqlalchemy.orm import Session
 
-from backend.repositories.base import Repository
 from backend.models import Device
+from backend.repositories.base import Repository
 
 
 class SQLDeviceRepository(Repository[Device]):

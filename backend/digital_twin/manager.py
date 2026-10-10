@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from uuid import uuid4
 
 from backend.digital_twin.access_control import (
     build_access_control_demo_devices,
     zones_as_dicts,
 )
-from backend.simulation.device import SimDevice
-from backend.simulation.simulator import Simulator
 from backend.security.orchestrator import SecurityOrchestrator
+from backend.settings import get_settings
+from backend.simulation.device import SimDevice
 from backend.simulation.environment import SimConfig
+from backend.simulation.simulator import Simulator
+
+# Upper bound on devices materialised by a single scripted scenario. Keeps a
+# scenario bounded even if a caller asks for more.
+MAX_SCENARIO_DEVICES = 1000
 
 
 _manager_singleton: "DigitalTwinManager | None" = None
@@ -50,7 +54,7 @@ class DigitalTwinManager:
         self.sim = Simulator(seed=self.config.random_seed, broadcaster=broadcaster)
         # instantiate security orchestrator and wire callbacks
         try:
-            self.security = SecurityOrchestrator()
+            self.security = SecurityOrchestrator(seed=self.config.random_seed)
             # let simulator call orchestrator for packet events
             self.sim.packet_callback = self.security.receive_packet
         except Exception:
@@ -72,6 +76,7 @@ class DigitalTwinManager:
         trust_score: float = 0.0,
         credential_label: str | None = None,
         attacker_id: str | None = None,
+        observation: dict | None = None,
     ) -> SimDevice:
         device_id = str(uuid4())
         dev = SimDevice(
@@ -109,6 +114,7 @@ class DigitalTwinManager:
                         "malicious": malicious,
                         "credential_label": credential_label,
                         "attacker_id": attacker_id,
+                        "observation": observation,
                     }
                 )
                 dev.trust_score = float(result.get("trust_score", trust_score))
@@ -151,6 +157,7 @@ class DigitalTwinManager:
         trust_score: float = 0.0,
         credential_label: str | None = None,
         attacker_id: str | None = None,
+        observation: dict | None = None,
     ) -> SimDevice:
         device = SimDevice(
             device_id=device_id,
@@ -184,6 +191,10 @@ class DigitalTwinManager:
                     "malicious": malicious,
                     "credential_label": credential_label,
                     "attacker_id": attacker_id,
+                    "observation": observation,
+                    # Access-control joins gate physical access, so degraded/absent
+                    # telemetry must not silently resolve to "allow".
+                    "security_sensitive": True,
                 }
             )
             device.trust_score = float(result.get("trust_score", trust_score))
@@ -212,7 +223,8 @@ class DigitalTwinManager:
     def reset_simulation(self) -> None:
         self.sim.reset()
         if hasattr(self, "security") and self.security:
-            self.security.reset()
+            # Re-seed so a given scenario configuration reproduces identical runs.
+            self.security.reset(seed=self.config.random_seed)
 
     def get_devices(self) -> List[Dict]:
         return self.sim.snapshot()
@@ -255,8 +267,17 @@ class DigitalTwinManager:
         scenario_name: str,
         device_count: int = 100,
         ghost_count: int | None = None,
+        seed: int | None = None,
     ) -> Dict:
-        """Execute a scripted access-control demonstration scenario using the existing security pipeline."""
+        """Execute a scripted access-control demonstration scenario using the existing security pipeline.
+
+        Args:
+            scenario_name: Scenario identifier.
+            device_count: Number of legitimate devices to materialise.
+            ghost_count: Override for the number of ghost/Sybil identities.
+            seed: Optional PRNG seed for this run. Overrides the manager's
+                configured seed so callers can run reproducible experiments.
+        """
         scenario = scenario_name.lower().replace(" ", "_")
         if scenario not in {
             "normal",
@@ -268,28 +289,29 @@ class DigitalTwinManager:
         }:
             scenario = "access_control_demo"
 
+        if seed is not None:
+            self.config.random_seed = seed
+
         self.reset_simulation()
 
         if scenario in {"normal", "access_control_demo"}:
             attack_count = 0
             intensity = 0.5
-            duration = 0.2
         elif scenario == "light_sybil_attack":
             attack_count = ghost_count or 10
             intensity = 1.0
-            duration = 0.8
         elif scenario == "medium_sybil_attack":
             attack_count = ghost_count or 20
             intensity = 1.5
-            duration = 1.0
         else:
             attack_count = ghost_count or 50
             intensity = 2.0
-            duration = 1.2
 
         demo_devices = build_access_control_demo_devices(
-            legitimate_count=min(device_count, 100),
+            legitimate_count=min(device_count, MAX_SCENARIO_DEVICES),
             ghost_count=attack_count,
+            seed=self.config.random_seed,
+            severity=min(2.0, max(0.5, intensity)),
         )
 
         for device in demo_devices:
@@ -309,6 +331,7 @@ class DigitalTwinManager:
                 trust_score=float(device["trust_score"]),
                 credential_label=device.get("credential_label"),
                 attacker_id=device.get("attacker_id"),
+                observation=device.get("observation"),
             )
 
         # Give the security pipeline a small amount of traffic to update the trust engine.
@@ -327,19 +350,56 @@ class DigitalTwinManager:
                 }
             )
 
+        # The ghosts above are materialised as observable, scored identities, so
+        # the attack summary is derived from the detector's actual outcomes rather
+        # than a separate (legacy) ghost-engine campaign. This keeps ``attack``
+        # and the analytics ``attack_defense`` block consistent with the
+        # confusion matrix instead of reporting a spurious 0% detection rate.
         if attack_count > 0:
-            attacker_id = f"{scenario}-attacker"
-            self.security.start_attack(attacker_id=attacker_id, count=attack_count, intensity=intensity, duration=duration)
-            time.sleep(duration + 0.2)
-            attack_stats = self.security.stop_attack(attacker_id)
+            confusion = self.security.analytics.metrics().get("confusion_matrix", {})
+            # TP counts scored *events* (join and, for early devices, packets),
+            # so cap at the number of distinct ghost identities.
+            detected_count = min(attack_count, int(confusion.get("true_positives", 0)))
+            detection_rate = detected_count / attack_count
+            attack_stats = {
+                "ghost_count": attack_count,
+                "detected_count": detected_count,
+                "detection_rate": detection_rate,
+                "success_rate": round(1.0 - detection_rate, 4),
+            }
+            self.security.analytics.record_attack(
+                f"{scenario}-attacker", attack_count, detected_count
+            )
         else:
-            attack_stats = {"ghost_count": 0, "detection_rate": 0.0, "success_rate": 0.0}
+            attack_stats = {
+                "ghost_count": 0,
+                "detected_count": 0,
+                "detection_rate": 0.0,
+                "success_rate": 0.0,
+            }
+
+        # Attach provenance so exported metrics can be tied to this exact run.
+        effective_seed = self.config.random_seed
+        detector = getattr(self.security, "detector", None)
+        self.security.analytics.set_run_metadata(
+            scenario=scenario,
+            device_count=min(device_count, MAX_SCENARIO_DEVICES),
+            ghost_count=attack_count,
+            seed=effective_seed,
+            software_version=get_settings().app_version,
+            detector_version=getattr(detector, "version", None),
+            detector_threshold=(
+                detector.config.decision_threshold if detector is not None else None
+            ),
+        )
 
         status = self.status()
         return {
             "scenario": scenario,
-            "device_count": min(device_count, 100),
+            "device_count": min(device_count, MAX_SCENARIO_DEVICES),
             "ghost_count": attack_count,
+            "seed": effective_seed,
+            "software_version": get_settings().app_version,
             "processed_joins": status.get("security", {}).get("processed_joins", 0),
             "processed_packets": status.get("security", {}).get("processed_packets", 0),
             "ghost_nodes": status.get("security", {}).get("ghost_nodes", 0),

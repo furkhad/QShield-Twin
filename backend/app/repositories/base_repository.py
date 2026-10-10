@@ -6,7 +6,7 @@ repositories to extend.
 
 from __future__ import annotations
 
-from typing import Generic, TypeVar, Type, Iterable
+from typing import Generic, Iterable, Type, TypeVar
 
 from sqlalchemy.orm import Session
 

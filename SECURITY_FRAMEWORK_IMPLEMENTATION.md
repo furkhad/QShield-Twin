@@ -145,22 +145,25 @@ class IPostQuantumCrypto(Protocol):
 
 ---
 
-## MODULE 5: Sharded Ledger (Complete Distributed Storage)
+## MODULE 5: Sharded Audit Ledger (local, tamper-evident)
 
 ### Implementation: `backend/security/ledger/sharded_ledger.py`
 
 **Features:**
-- ✅ Hash-based consistent sharding (SHA256)
-- ✅ Append-only ledger for auditability
-- ✅ Efficient device queries (O(n) within shard)
+- ✅ Hash-based sharding (SHA256) — a local storage-partitioning scheme
+- ✅ Append-only, SHA-256 **hash-chained** entries (each entry commits to its predecessor)
+- ✅ `verify_integrity()` / `GET /api/v1/security/ledger/integrity` detects edits or deletions
 - ✅ Blacklist/restore functionality
 - ✅ Device status tracking
 - ✅ Shard statistics
 - ✅ CSV/JSON export
 
+> Note: this is a single-node, tamper-evident audit log. It is **not** a
+> blockchain and provides no replication or distributed consensus.
+
 **Shard Selection:**
 ```python
-shard_id = SHA256(device_id).bytes[0] % shard_count
+shard_id = SHA256(device_id).digest()[0] % shard_count
 ```
 
 **Ledger Entry Structure:**
@@ -169,6 +172,7 @@ shard_id = SHA256(device_id).bytes[0] % shard_count
 - timestamp
 - reason (join, packet, verification, attack, restore)
 - evidence (metadata dictionary)
+- prev_hash / entry_hash (hash-chain linkage for tamper detection)
 - blacklisted (flag)
 
 **APIs:**
@@ -467,7 +471,7 @@ class DigitalTwinManager:
         self.security = SecurityOrchestrator()
         # Wire packet callback
         self.sim.packet_callback = self.security.receive_packet
-    
+
     def spawn_device(self, ...):
         # Notify orchestrator of join
         self.security.receive_join(device_info)

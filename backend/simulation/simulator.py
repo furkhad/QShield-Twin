@@ -7,19 +7,19 @@ used by the API controllers.
 
 from __future__ import annotations
 
+import random
 import threading
+import threading as _threading
 import time
+from collections import deque
 from dataclasses import asdict
 from typing import Dict, Optional
-from collections import deque
-import threading as _threading
 
 import simpy
-import random
 
+from backend.simulation.communication import CommunicationEngine
 from backend.simulation.device import SimDevice
 from backend.simulation.network import NetworkGraph
-from backend.simulation.communication import CommunicationEngine
 
 
 class Simulator:

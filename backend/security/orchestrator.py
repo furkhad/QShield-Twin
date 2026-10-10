@@ -36,20 +36,21 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import random
 import threading
 import time
 from collections import deque
-from typing import Any, Dict, Optional, Tuple
 from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple
 
 from backend.app.websocket.manager import manager as ws_manager
-from backend.security.ghost.ghost_engine import GhostEngine
-from backend.security.proximity.proof_of_proximity import ProofOfProximityEngine
-from backend.security.pqc.simulated_lattice import SimulatedLatticeCrypto
-from backend.security.trust.trust_engine import TrustEngine
-from backend.security.ledger.sharded_ledger import ShardedLedger
 from backend.security.analytics.analytics_engine import AnalyticsEngine
-
+from backend.security.detection.detector import GhostDetector, Observation
+from backend.security.ghost.ghost_engine import GhostEngine
+from backend.security.ledger.sharded_ledger import ShardedLedger
+from backend.security.pqc.simulated_lattice import SimulatedLatticeCrypto
+from backend.security.proximity.proof_of_proximity import ProofOfProximityEngine
+from backend.security.trust.trust_engine import TrustEngine
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +79,19 @@ class SecurityOrchestrator:
     - Track attack statistics
     """
 
-    def __init__(self):
-        """Initialize all security engines and set up event callbacks."""
+    def __init__(self, seed: Optional[int] = None):
+        """Initialize all security engines and set up event callbacks.
+
+        Args:
+            seed: Optional PRNG seed. When provided, all stochastic components
+                (ghost behavior, proximity noise) become reproducible so a
+                scenario can be re-run and audited. The seed is also exposed in
+                analytics exports.
+        """
+        self.seed = seed
+        if seed is not None:
+            random.seed(seed)
+
         # Initialize security engines
         self.ghost = GhostEngine(event_cb=self._on_ghost_event)
         self.proximity = ProofOfProximityEngine(distance_tolerance_m=10.0)
@@ -87,6 +99,9 @@ class SecurityOrchestrator:
         self.trust = TrustEngine()
         self.ledger = ShardedLedger(shards=8)
         self.analytics = AnalyticsEngine()
+        # Feature-based Sybil/ghost detector (replaces the former name-token
+        # heuristic). It consumes only observable telemetry, never scenario labels.
+        self.detector = GhostDetector()
 
         # Tracking
         self.processed_joins: int = 0
@@ -113,14 +128,25 @@ class SecurityOrchestrator:
             self._recent_events.append(event)
         self._emit(event)
 
-    def reset(self) -> None:
-        """Reset the security state for reruns and scenario demos."""
+    def reset(self, seed: Optional[int] = None) -> None:
+        """Reset the security state for reruns and scenario demos.
+
+        Args:
+            seed: Optional new PRNG seed. When omitted the previously set seed
+                (if any) is reused so reruns remain reproducible.
+        """
+        if seed is not None:
+            self.seed = seed
+        if self.seed is not None:
+            random.seed(self.seed)
+
         self.ghost = GhostEngine(event_cb=self._on_ghost_event)
         self.proximity = ProofOfProximityEngine(distance_tolerance_m=10.0)
         self.pqc = SimulatedLatticeCrypto(algorithm="simulated-ntru")
         self.trust = TrustEngine()
         self.ledger = ShardedLedger(shards=8)
         self.analytics = AnalyticsEngine()
+        self.detector = GhostDetector()
         self.processed_joins = 0
         self.processed_packets = 0
         self.legitimate_devices = set()
@@ -170,23 +196,21 @@ class SecurityOrchestrator:
             timestamp=timestamp,
         )
 
-        # STEP 1: Ghost Detection
-        # Check if device matches any known ghost attack patterns
-        is_likely_ghost = self._check_ghost_pattern(device_id, device=device)
+        # STEP 1: Observable feature extraction.
+        # The observation is derived only from telemetry a deployment can measure
+        # (proof-of-proximity measurement, signature outcome, traffic volume and
+        # credentials). Scenario ground-truth labels (malicious/legitimate/
+        # credential_label/attacker_id) are deliberately NOT read here; they are
+        # consumed only when recording metrics below.
+        claimed_pos = (join_req.x, join_req.y)
+        observation = self._extract_observation(device_id, claimed_pos, device=device)
 
-        # STEP 2: PQC Key Generation & Verification
-        # Generate keypair for device and store as evidence
+        # STEP 2: PQC Key Generation & Verification (retained as ledger evidence).
         pub_key, priv_key = self.pqc.generate_keypair()
         self._device_keys[device_id] = (pub_key, priv_key)
 
-        # STEP 3: Proximity Verification
-        claimed_pos = (join_req.x, join_req.y)
-        measured_pos = self._infer_measured_position(
-            device_id=device_id,
-            claimed_pos=claimed_pos,
-            device_type=join_req.device_type,
-            is_likely_ghost=is_likely_ghost,
-        )
+        # STEP 3: Proximity Verification against the observed measurement.
+        measured_pos = observation.measured_pos or claimed_pos
         self._device_positions[device_id] = claimed_pos
         proximity_result = self.proximity.verify(
             device_id=device_id,
@@ -197,10 +221,21 @@ class SecurityOrchestrator:
         message = f"join:{device_id}:{join_req.x}:{join_req.y}".encode()
         signature = self.pqc.sign(priv_key, message)
         sig_verified = self.pqc.verify(pub_key, message, signature)
+        # The observable signature outcome overrides the (always-valid) local
+        # self-signature when the scenario supplies one.
+        authentication_valid = (
+            sig_verified if observation.signature_valid is None else observation.signature_valid
+        )
+
+        # STEP 3b: Feature-based ghost detection (explainable, no label leakage).
+        detection = self.detector.observe(observation)
+        is_likely_ghost = detection.is_flagged
+        detection_unknown = detection.is_unknown
+        security_sensitive = bool(device.get("security_sensitive", False))
 
         # STEP 4: Trust Calculation
         trust_record = self.trust.update_from_verification(device_id, proximity_result)
-        self.trust.update_from_signature(device_id, sig_verified)
+        self.trust.update_from_signature(device_id, authentication_valid)
         if is_likely_ghost:
             self.trust.penalize_for_attack(device_id, attack_severity=1.4)
             if device_id in self.ghost.ghosts:
@@ -209,17 +244,30 @@ class SecurityOrchestrator:
         trust_record = self.trust.get_trust(device_id) or trust_record
 
         # STEP 5: Ledger Update
+        # A security-sensitive join whose telemetry is unknown must not be
+        # recorded as accepted, even if the trust engine would otherwise allow it.
+        ledger_accepted = (
+            trust_record.decision in ["accept", "monitor"]
+            and not (detection_unknown and security_sensitive)
+        )
         self.ledger.append(
             device_id=device_id,
-            accepted=(trust_record.decision in ["accept", "monitor"]),
+            accepted=ledger_accepted,
             reason="join",
             evidence={
                 "proximity": proximity_result.__dict__,
                 "pqc_pub": pub_key.hex()[:32] + "...",
                 "trust_score": trust_record.score,
                 "ghost_detected": is_likely_ghost,
-                "signature_verified": sig_verified,
+                "signature_verified": authentication_valid,
                 "measured_pos": measured_pos,
+                "detector": {
+                    "version": detection.detector_version,
+                    "score": detection.score,
+                    "status": detection.status,
+                    "unknown": detection_unknown,
+                    "reasons": detection.reasons,
+                },
             },
         )
 
@@ -230,10 +278,18 @@ class SecurityOrchestrator:
         elif is_likely_ghost and trust_record.score < 0.7:
             decision = "monitor"
 
+        # Missing, stale, malformed or contradictory telemetry must never be
+        # silently treated as benign. Only a would-be *allow* is reclassified;
+        # an already-denying decision (reject/blacklist) is left untouched so the
+        # unknown status can never weaken it.
+        if detection_unknown and decision in ("accept", "monitor"):
+            decision = "challenge" if security_sensitive else "monitor"
+
         accepted = decision in ["accept", "monitor"]
         security_status = (
             "trusted" if decision == "accept" else
             "monitoring" if decision == "monitor" else
+            "challenge_required" if decision == "challenge" else
             "rejected" if decision == "reject" else
             "blacklisted"
         )
@@ -250,18 +306,31 @@ class SecurityOrchestrator:
                 "trust_score": trust_record.score,
                 "decision": decision,
                 "message": "Ghost identity detected" if is_likely_ghost else "New access-control device detected",
-                "authentication_status": "verified" if sig_verified else "failed",
+                "authentication_status": "verified" if authentication_valid else "failed",
                 "proximity_status": proximity_result.decision,
                 "ghost_detected": is_likely_ghost,
+                "detection_score": detection.score,
+                "detection_status": detection.status,
+                "detection_unknown": detection_unknown,
+                "detection_reasons": detection.reasons,
             }
         )
 
+        # Ground truth is the scenario's own label, kept strictly separate from
+        # the detector output (is_likely_ghost) so the confusion matrix reflects
+        # real misses/false alarms rather than label leakage. Unknown telemetry is
+        # recorded as *unobserved* so it is never miscounted as a true negative.
+        ground_truth_ghost = bool(device.get("malicious", False)) or device.get("legitimate") is False
         self.analytics.record_detection(
             device_id=device_id,
-            is_ghost=is_likely_ghost,
+            is_ghost=ground_truth_ghost,
             detected_as_ghost=is_likely_ghost,
             verification_time_ms=proximity_result.propagation_delay_ms,
             confidence=proximity_result.confidence,
+            score=detection.score,
+            detector_version=detection.detector_version,
+            reasons=detection.reasons,
+            observed=not detection_unknown,
         )
         self.analytics.record_pqc_metrics(self.pqc.metrics())
 
@@ -280,6 +349,8 @@ class SecurityOrchestrator:
             "reason": decision,
             "proximity": proximity_result.decision,
             "ghost_detected": is_likely_ghost,
+            "detection_status": detection.status,
+            "detection_unknown": detection_unknown,
             "security_status": security_status,
         }
 
@@ -309,24 +380,13 @@ class SecurityOrchestrator:
         with self.lock:
             self.processed_packets += 1
 
-        # STEP 1: Extract payload
+        # STEP 1: Extract observable features (never scenario labels).
         payload = packet.get("payload", {})
-        claimed_pos = payload.get("claimed_pos", (0.0, 0.0))
-        measured_pos = payload.get("measured_pos", (0.0, 0.0))
+        claimed_pos = tuple(payload.get("claimed_pos", (0.0, 0.0)))
+        observation = self._extract_observation(src, claimed_pos, payload=payload)
+        measured_pos = observation.measured_pos or claimed_pos
 
-        # STEP 2: Proximity Verification
-        suspicious_packet = self._is_suspicious_packet(src, payload)
-        if suspicious_packet:
-            measured_pos = (
-                claimed_pos[0] + 15.0 + float(payload.get("rate", 1.0)) * 0.1,
-                claimed_pos[1] + 10.0,
-            )
-        else:
-            measured_pos = (
-                claimed_pos[0] + 0.3 + min(float(payload.get("rate", 1.0)) * 0.01, 0.8),
-                claimed_pos[1] + 0.2,
-            )
-
+        # STEP 2: Proximity Verification against the observed measurement.
         self._device_positions[src] = claimed_pos
         proximity_result = self.proximity.verify(
             device_id=src,
@@ -345,15 +405,21 @@ class SecurityOrchestrator:
 
         message = str(payload).encode()
         signature = payload.get("signature", b"")
-        sig_verified = self.pqc.verify(pub_key, message, signature if isinstance(signature, (bytes, bytearray)) else b"")
+        pqc_verified = self.pqc.verify(pub_key, message, signature if isinstance(signature, (bytes, bytearray)) else b"")
+        authentication_valid = (
+            pqc_verified if observation.signature_valid is None else observation.signature_valid
+        )
 
-        # STEP 4: Packet Behavior Analysis
+        # STEP 4: Feature-based packet anomaly detection (no label leakage).
         packet_rate = payload.get("rate", 1.0)
         packet_size = payload.get("size", 100)
+        detection = self.detector.observe(observation)
+        suspicious_packet = detection.is_flagged
+        detection_unknown = detection.is_unknown
 
         # STEP 5: Trust Update
         self.trust.update_from_verification(src, proximity_result)
-        self.trust.update_from_signature(src, sig_verified)
+        self.trust.update_from_signature(src, authentication_valid)
         self.trust.update_from_packet(src, {"rate": packet_rate, "size": packet_size})
         if suspicious_packet:
             self.trust.penalize_for_attack(src, attack_severity=1.2)
@@ -364,15 +430,22 @@ class SecurityOrchestrator:
         # STEP 6: Ledger Update
         self.ledger.append(
             device_id=src,
-            accepted=(trust_score >= 0.4 and sig_verified and proximity_result.decision != "reject"),
+            accepted=(trust_score >= 0.4 and authentication_valid and proximity_result.decision != "reject"),
             reason="packet",
             evidence={
                 "proximity": proximity_result.decision,
-                "signature_verified": sig_verified,
+                "signature_verified": authentication_valid,
                 "confidence": proximity_result.confidence,
                 "rate": packet_rate,
                 "size": packet_size,
                 "suspicious_packet": suspicious_packet,
+                "detector": {
+                    "version": detection.detector_version,
+                    "score": detection.score,
+                    "status": detection.status,
+                    "unknown": detection_unknown,
+                    "reasons": detection.reasons,
+                },
             },
         )
 
@@ -381,10 +454,13 @@ class SecurityOrchestrator:
             {
                 "type": "packet_verified",
                 "device": src,
+                "destination": dst,
                 "proximity_result": proximity_result.decision,
-                "signature_verified": sig_verified,
+                "signature_verified": authentication_valid,
                 "trust_score": trust_score,
                 "confidence": proximity_result.confidence,
+                "detection_status": detection.status,
+                "detection_unknown": detection_unknown,
                 "timestamp": timestamp,
             }
         )
@@ -392,12 +468,21 @@ class SecurityOrchestrator:
         # Record in analytics
         self.analytics.record_verification_time(src, proximity_result.propagation_delay_ms)
         self.analytics.record_trust_score(src, trust_score)
+        # Ground truth (scenario label) vs. detector output (suspicious_packet),
+        # recorded separately so precision/recall reflect the actual detector.
+        ground_truth_ghost = bool(
+            self._device_metadata.get(src, {}).get("malicious", False)
+        )
         self.analytics.record_detection(
             device_id=src,
-            is_ghost=suspicious_packet,
+            is_ghost=ground_truth_ghost,
             detected_as_ghost=suspicious_packet,
             verification_time_ms=proximity_result.propagation_delay_ms,
             confidence=proximity_result.confidence,
+            score=detection.score,
+            detector_version=detection.detector_version,
+            reasons=detection.reasons,
+            observed=not detection_unknown,
         )
         self.analytics.record_pqc_metrics(self.pqc.metrics())
 
@@ -412,7 +497,7 @@ class SecurityOrchestrator:
                 "trust_score": trust_score,
                 "decision": trust_record.decision if trust_record else "monitor",
                 "message": "Physical proximity verified" if proximity_result.decision == "accept" else "Suspicious packet behavior detected",
-                "authentication_status": "verified" if sig_verified else "failed",
+                "authentication_status": "verified" if authentication_valid else "failed",
                 "proximity_status": proximity_result.decision,
             }
         )
@@ -420,80 +505,70 @@ class SecurityOrchestrator:
         return {
             "device": src,
             "proximity": proximity_result.decision,
-            "signature_verified": sig_verified,
+            "signature_verified": authentication_valid,
             "trust_score": trust_score,
             "confidence": proximity_result.confidence,
         }
 
-    def _check_ghost_pattern(self, device_id: str, device: Optional[Dict[str, Any]] = None) -> bool:
-        """Detect whether a device resembles a Sybil or ghost identity."""
-        if not device_id:
-            return False
-
-        device_id_text = str(device_id).lower()
-        if device:
-            name = str(device.get("name", "")).lower()
-            device_type = str(device.get("device_type", "")).lower()
-        else:
-            name = ""
-            device_type = ""
-
-        suspicious_tokens = ("ghost", "sybil", "attacker", "copy", "clone", "fake", "rogue", "impostor")
-
-        if any(token in device_id_text for token in suspicious_tokens):
-            return True
-        if any(token in name for token in suspicious_tokens):
-            return True
-        if any(token in device_type for token in suspicious_tokens):
-            return True
-        if device and bool(device.get("malicious")):
-            return True
-        if device and str(device.get("credential_label", "")).lower() in {"ghost", "clone", "fake", "rogue"}:
-            return True
-
-        with self.lock:
-            if device_id in self.ghost.ghosts:
-                return True
-            active_attacks = [attack for attack in self.ghost.attacks.values() if attack.end_time is None]
-            if active_attacks and len(active_attacks) >= 1 and device_id_text.startswith("ghost"):
-                return True
-
-        return False
-
-    def _infer_measured_position(
+    def _extract_observation(
         self,
         device_id: str,
         claimed_pos: Tuple[float, float],
-        device_type: str | None = None,
-        is_likely_ghost: bool = False,
-    ) -> Tuple[float, float]:
-        """Create a measurement that reflects whether the device is behaving suspiciously."""
-        if is_likely_ghost:
-            offset_x = 12.0 + (len(device_id) % 7) * 1.5
-            offset_y = 8.0 + (len(device_id) % 5) * 1.0
-            return claimed_pos[0] + offset_x, claimed_pos[1] + offset_y
+        device: Optional[Dict[str, Any]] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Observation:
+        """Build an observable-only :class:`Observation` from a join or packet.
 
-        if device_type and "ghost" in str(device_type).lower():
-            return claimed_pos[0] + 8.0, claimed_pos[1] + 6.0
+        Only telemetry a deployment can legitimately measure is read:
+        ``measured_pos`` (proof-of-proximity), ``signature_valid``, ``rate`` /
+        ``size`` (traffic), and ``credential_fingerprint``. Device names, ids,
+        ``device_type`` and scenario labels are never consulted, so the detector
+        cannot exploit generator vocabulary or ground truth.
 
-        return claimed_pos[0] + 0.5, claimed_pos[1] + 0.3
+        Missing telemetry is passed through as *missing* rather than being
+        fabricated into a benign default. Field values are forwarded unchanged so
+        the detector can distinguish an absent signal from a *malformed* one; the
+        resulting outcome is then an explicit ``unknown`` status instead of an
+        implicit clean pass.
+        """
 
-    def _is_suspicious_packet(self, device_id: str, payload: Dict[str, Any]) -> bool:
-        """Use packet characteristics to decide whether the packet should be treated as suspicious."""
-        if not device_id:
-            return False
+        source: Dict[str, Any] = device if device is not None else (payload or {})
+        raw: Any = source.get("observation") if isinstance(source, dict) else None
+        if raw is None and isinstance(source, dict):
+            # Packets may carry their observable fields inline.
+            raw = source
+        raw = raw if isinstance(raw, dict) else {}
 
-        if self._check_ghost_pattern(device_id):
-            return True
+        measured = raw.get("measured_pos")
+        signature_valid = raw.get("signature_valid")
+        packet_rate = raw.get("rate", raw.get("packet_rate"))
+        packet_size = raw.get("size", raw.get("packet_size"))
+        credential = raw.get("credential_fingerprint")
+        timestamp = raw.get("timestamp")
+        if timestamp is None:
+            timestamp = time.time()
 
-        if payload.get("rate", 0) > 20:
-            return True
-        if payload.get("size", 0) > 5000:
-            return True
-        if payload.get("signature") in (None, b""):
-            return True
+        # Prefer a trust score supplied with the observation; otherwise fall back
+        # to the trust engine's current history for this identity.
+        supplied_trust = raw.get("trust_score")
+        trust = self.trust.get_trust(device_id)
+        trust_score = (
+            supplied_trust
+            if supplied_trust is not None
+            else (trust.score if trust else None)
+        )
 
-        return False
+        return Observation(
+            device_id=device_id,
+            claimed_pos=claimed_pos,
+            measured_pos=measured,
+            signature_valid=signature_valid,
+            packet_rate=packet_rate,
+            packet_size=packet_size,
+            credential_fingerprint=credential,
+            trust_score=trust_score,
+            timestamp=timestamp,
+        )
 
     def start_attack(
         self,
@@ -523,6 +598,36 @@ class SecurityOrchestrator:
 
         self.analytics.record_attack(attacker_id, count, 0)
 
+        # Score each spawned identity through the normal join pipeline using
+        # telemetry a deployment can observe: a shared credential, spoofed
+        # co-located proof-of-proximity measurements, failing signatures and an
+        # elevated packet rate. The feature-based detector still decides whether
+        # each is a ghost; this only ensures the campaign statistics reflect
+        # real detections instead of a hard-coded zero.
+        for node in self.ghost.list_ghosts_by_attacker(attacker_id):
+            self.receive_join(
+                {
+                    "device_id": node.device_id,
+                    "name": node.name,
+                    "device_type": "access_control_device",
+                    "x": node.x,
+                    "y": node.y,
+                    "legitimate": False,
+                    "malicious": True,
+                    "attacker_id": attacker_id,
+                    "credential_label": f"cred-{attacker_id}",
+                    "observation": {
+                        # Identities claim different spots, but the measured
+                        # proof-of-proximity resolves back to a single origin.
+                        "measured_pos": [0.0, 0.0],
+                        "signature_valid": False,
+                        "packet_rate": 20.0 * intensity,
+                        "packet_size": 420,
+                        "credential_fingerprint": f"cred-{attacker_id}",
+                    },
+                }
+            )
+
         self._record_event(
             {
                 "timestamp": time.time(),
@@ -541,6 +646,7 @@ class SecurityOrchestrator:
             "ghosts_spawned": count,
             "intensity": intensity,
             "duration": duration,
+            "spawn_stats": stats,
         }
 
     def stop_attack(self, attacker_id: str) -> Dict[str, Any]:
@@ -548,11 +654,10 @@ class SecurityOrchestrator:
         stats = self.ghost.stop_attack(attacker_id)
 
         if stats:
-            self.analytics.record_attack(
-                attacker_id,
-                stats.ghost_count,
-                stats.detected_count,
-            )
+            # The campaign was already counted by ``record_attack`` at start;
+            # here we only add the detections observed during the campaign so a
+            # single attack is never double-counted.
+            self.analytics.record_detections(stats.detected_count)
 
             self._record_event(
                 {

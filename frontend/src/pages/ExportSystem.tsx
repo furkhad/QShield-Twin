@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { motion } from 'framer-motion'
 import { Download, FileJson, FileText, BarChart3, FileImage, Loader } from 'lucide-react'
+import { extractDetectionMetrics, extractSecurityCounters, extractVerification } from '../lib/metrics'
 
 // Data structure for export payloads including security metrics and analytics
 interface ExportData {
@@ -66,33 +67,33 @@ export default function ExportSystem() {
     csv += `Generated: ${data.timestamp}\n\n`
 
     // Security Status Section
+    const counters = extractSecurityCounters(data.security_status)
     csv += 'SECURITY STATUS\n'
     csv += 'Metric,Value\n'
-    csv += `Processed Joins,${data.security_status.processed_joins}\n`
-    csv += `Processed Packets,${data.security_status.processed_packets}\n`
-    csv += `Legitimate Devices,${data.security_status.legitimate_devices}\n`
-    csv += `Ghost Nodes Detected,${data.security_status.ghost_nodes}\n\n`
+    csv += `Processed Joins,${counters.processed_joins}\n`
+    csv += `Processed Packets,${counters.processed_packets}\n`
+    csv += `Legitimate Devices,${counters.legitimate_devices}\n`
+    csv += `Ghost Nodes Detected,${counters.ghost_nodes}\n\n`
 
     // Analytics Section
+    const detection = extractDetectionMetrics(data.analytics)
     csv += 'ANALYTICS METRICS\n'
     csv += 'Metric,Value\n'
-    if (data.analytics.detection_metrics) {
-      csv += `Precision,${(data.analytics.detection_metrics.precision * 100).toFixed(2)}%\n`
-      csv += `Recall,${(data.analytics.detection_metrics.recall * 100).toFixed(2)}%\n`
-      csv += `F1 Score,${(data.analytics.detection_metrics.f1_score * 100).toFixed(2)}%\n`
-      csv += `Accuracy,${(data.analytics.detection_metrics.accuracy * 100).toFixed(2)}%\n`
-    }
+    csv += `Precision,${(detection.precision * 100).toFixed(2)}%\n`
+    csv += `Recall,${(detection.recall * 100).toFixed(2)}%\n`
+    csv += `F1 Score,${(detection.f1_score * 100).toFixed(2)}%\n`
+    csv += `Accuracy,${(detection.accuracy * 100).toFixed(2)}%\n`
+    csv += `False-Positive Rate,${(detection.false_positive_rate * 100).toFixed(2)}%\n`
     csv += '\n'
 
     // Verification Metrics
+    const verification = extractVerification(data.verification_metrics)
     csv += 'VERIFICATION METRICS\n'
     csv += 'Metric,Value\n'
-    if (data.verification_metrics) {
-      csv += `Total Verifications,${data.verification_metrics.total_verifications}\n`
-      csv += `Acceptance Rate,${(data.verification_metrics.acceptance_rate * 100).toFixed(2)}%\n`
-      csv += `Average Confidence,${(data.verification_metrics.average_confidence * 100).toFixed(2)}%\n`
-      csv += `Average Time (ms),${data.verification_metrics.average_time}\n`
-    }
+    csv += `Total Verifications,${verification.total}\n`
+    csv += `Acceptance Rate,${(verification.acceptanceRate * 100).toFixed(2)}%\n`
+    csv += `Average Confidence,${(verification.avgConfidence * 100).toFixed(2)}%\n`
+    csv += `Average Propagation Delay (ms),${verification.avgPropagationMs.toFixed(2)}\n`
 
     const blob = new Blob([csv], { type: 'text/csv' })
     downloadFile(blob, `qshield-security-report-${Date.now()}.csv`)
@@ -117,35 +118,42 @@ export default function ExportSystem() {
     markdown += `This report documents the comprehensive security analysis conducted using the QShield Twin platform.\n\n`
 
     markdown += `## Security Status\n`
+    const counters = extractSecurityCounters(data.security_status)
     markdown += `| Metric | Value |\n`
     markdown += `|--------|-------|\n`
-    markdown += `| Processed Joins | ${data.security_status.processed_joins} |\n`
-    markdown += `| Processed Packets | ${data.security_status.processed_packets} |\n`
-    markdown += `| Legitimate Devices | ${data.security_status.legitimate_devices} |\n`
-    markdown += `| Ghost Nodes Detected | ${data.security_status.ghost_nodes} |\n\n`
+    markdown += `| Processed Joins | ${counters.processed_joins} |\n`
+    markdown += `| Processed Packets | ${counters.processed_packets} |\n`
+    markdown += `| Legitimate Devices | ${counters.legitimate_devices} |\n`
+    markdown += `| Ghost Nodes Detected | ${counters.ghost_nodes} |\n\n`
 
     markdown += `## Detection Accuracy\n`
-    if (data.analytics.detection_metrics) {
-      markdown += `| Metric | Value |\n`
-      markdown += `|--------|-------|\n`
-      markdown += `| Precision | ${(data.analytics.detection_metrics.precision * 100).toFixed(2)}% |\n`
-      markdown += `| Recall | ${(data.analytics.detection_metrics.recall * 100).toFixed(2)}% |\n`
-      markdown += `| F1 Score | ${(data.analytics.detection_metrics.f1_score * 100).toFixed(2)}% |\n`
-      markdown += `| Accuracy | ${(data.analytics.detection_metrics.accuracy * 100).toFixed(2)}% |\n\n`
-    }
+    const detection = extractDetectionMetrics(data.analytics)
+    markdown += `| Metric | Value |\n`
+    markdown += `|--------|-------|\n`
+    markdown += `| Precision | ${(detection.precision * 100).toFixed(2)}% |\n`
+    markdown += `| Recall | ${(detection.recall * 100).toFixed(2)}% |\n`
+    markdown += `| F1 Score | ${(detection.f1_score * 100).toFixed(2)}% |\n`
+    markdown += `| Accuracy | ${(detection.accuracy * 100).toFixed(2)}% |\n`
+    markdown += `| False-Positive Rate | ${(detection.false_positive_rate * 100).toFixed(2)}% |\n\n`
 
     markdown += `## Verification Performance\n`
-    if (data.verification_metrics) {
-      markdown += `| Metric | Value |\n`
-      markdown += `|--------|-------|\n`
-      markdown += `| Total Verifications | ${data.verification_metrics.total_verifications} |\n`
-      markdown += `| Acceptance Rate | ${(data.verification_metrics.acceptance_rate * 100).toFixed(2)}% |\n`
-      markdown += `| Average Confidence | ${(data.verification_metrics.average_confidence * 100).toFixed(2)}% |\n`
-      markdown += `| Average Time | ${data.verification_metrics.average_time.toFixed(2)}ms |\n\n`
-    }
+    const verification = extractVerification(data.verification_metrics)
+    markdown += `| Metric | Value |\n`
+    markdown += `|--------|-------|\n`
+    markdown += `| Total Verifications | ${verification.total} |\n`
+    markdown += `| Acceptance Rate | ${(verification.acceptanceRate * 100).toFixed(2)}% |\n`
+    markdown += `| Average Confidence | ${(verification.avgConfidence * 100).toFixed(2)}% |\n`
+    markdown += `| Average Propagation Delay | ${verification.avgPropagationMs.toFixed(2)}ms |\n\n`
+
+    markdown += `## Data Source & Limitations\n`
+    markdown += `All values above are produced by the QShield Twin simulation using synthetic\n`
+    markdown += `ground-truth labels. They characterise the simulator, not validated real-world\n`
+    markdown += `security, proximity, or cryptographic guarantees.\n\n`
 
     markdown += `## Conclusion\n`
-    markdown += `The QShield Twin security framework successfully demonstrated high detection accuracy and rapid verification times.\n\n`
+    markdown += `Within the simulated scenarios exercised, the platform reported the detection\n`
+    markdown += `and verification metrics above. These are simulation outputs and are not evidence\n`
+    markdown += `of production effectiveness.\n\n`
 
     markdown += `---\n*This report was automatically generated by QShield Twin*\n`
 
@@ -248,7 +256,7 @@ export default function ExportSystem() {
       {/* Export History */}
       <div className="bg-gradient-to-br from-slate-800 to-slate-900 border border-slate-700 rounded-lg p-8">
         <h2 className="text-xl font-bold text-slate-100 mb-4">Export History</h2>
-        
+
         {exportedFormats.length === 0 ? (
           <p className="text-slate-400 text-center py-8">No exports yet. Use the buttons above to create your first export.</p>
         ) : (

@@ -20,8 +20,8 @@ import math
 import random
 import time
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Tuple, List, Dict, Any
+from dataclasses import dataclass
+from typing import Any, Dict, List, Tuple
 
 
 @dataclass
@@ -112,7 +112,6 @@ class ProofOfProximityEngine:
 
         # Step 4: Add realistic sensor noise (Gaussian)
         sensor_noise_ms = random.gauss(0, self.noise_std_dev)
-        latency_ms = max(0.0, propagation_delay_ms + sensor_noise_ms)
 
         # Step 5: Compute distance error as the positional offset itself.
         distance_error = measured_distance

@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
+from backend.app.schemas.requests import (
+    ScenarioRequest,
+    SimulationStartRequest,
+    SimulationStepRequest,
+)
 from backend.app.schemas.response import StandardResponse
-from backend.digital_twin.manager import DigitalTwinManager, get_manager
-from backend.simulation.environment import SimConfig
+from backend.digital_twin.manager import get_manager
 
 router = APIRouter(tags=["simulation"])
 
-_manager = get_manager(config=SimConfig())
+_manager = get_manager()
 
 
 @router.post("/simulation/start", response_model=StandardResponse)
-def start_simulation(payload: dict | None = None):
-    runtime = None
-    if payload:
-        runtime = float(payload.get("runtime", 0)) or None
+def start_simulation(payload: SimulationStartRequest | None = None):
+    runtime = payload.runtime if payload else None
     _manager.start_simulation(runtime=runtime)
     return StandardResponse(status="ok", message="Simulation started")
 
@@ -38,8 +40,10 @@ def simulation_status():
 def pause_simulation():
     try:
         _manager.sim.pause()
-    except Exception as exc:
-        return StandardResponse(status="error", message="Failed to pause simulation", errors={"detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return StandardResponse(
+            status="error", message="Failed to pause simulation", errors={"detail": str(exc)}
+        )
     return StandardResponse(status="ok", message="Simulation paused")
 
 
@@ -47,20 +51,22 @@ def pause_simulation():
 def resume_simulation():
     try:
         _manager.sim.resume()
-    except Exception as exc:
-        return StandardResponse(status="error", message="Failed to resume simulation", errors={"detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return StandardResponse(
+            status="error", message="Failed to resume simulation", errors={"detail": str(exc)}
+        )
     return StandardResponse(status="ok", message="Simulation resumed")
 
 
 @router.post("/simulation/step", response_model=StandardResponse)
-def step_simulation(payload: dict | None = None):
-    steps = 1
-    if payload:
-        steps = int(payload.get("steps", 1))
+def step_simulation(payload: SimulationStepRequest | None = None):
+    steps = payload.steps if payload else 1
     try:
         _manager.sim.step(steps=steps)
-    except Exception as exc:
-        return StandardResponse(status="error", message="Failed to step simulation", errors={"detail": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return StandardResponse(
+            status="error", message="Failed to step simulation", errors={"detail": str(exc)}
+        )
     return StandardResponse(status="ok", message=f"Advanced simulation by {steps} step(s)")
 
 
@@ -81,16 +87,21 @@ def list_scenarios():
 
 
 @router.post("/simulation/scenario/{scenario_name}", response_model=StandardResponse)
-def run_scenario(scenario_name: str, payload: dict | None = None):
+def run_scenario(scenario_name: str, payload: ScenarioRequest | None = None):
+    device_count = payload.device_count if payload else 100
+    ghost_count = payload.ghost_count if payload else None
+    seed = payload.seed if payload else None
     try:
-        device_count = 100
-        ghost_count = None
-        if payload:
-            device_count = int(payload.get("device_count", 100))
-            ghost_count = payload.get("ghost_count")
-            if ghost_count is not None:
-                ghost_count = int(ghost_count)
-        result = _manager.run_scenario(scenario_name=scenario_name, device_count=device_count, ghost_count=ghost_count)
-        return StandardResponse(status="ok", message="Scenario completed", data=result)
-    except Exception as exc:
-        return StandardResponse(status="error", message="Scenario execution failed", errors={"detail": str(exc)})
+        result = _manager.run_scenario(
+            scenario_name=scenario_name,
+            device_count=device_count,
+            ghost_count=ghost_count,
+            seed=seed,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        return StandardResponse(
+            status="error", message="Scenario execution failed", errors={"detail": str(exc)}
+        )
+    return StandardResponse(status="ok", message="Scenario completed", data=result)

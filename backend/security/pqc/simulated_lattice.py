@@ -16,9 +16,9 @@ from __future__ import annotations
 import hashlib
 import os
 import time
-from dataclasses import dataclass, field
-from typing import Tuple, Dict, List, Any
 from collections import deque
+from dataclasses import dataclass
+from typing import Any, Dict, Tuple
 
 from backend.security.interfaces import IPostQuantumCrypto
 
@@ -45,7 +45,7 @@ class Signature:
     signature_size_bytes: int = 0
 
 
-class SimulatedLatticeCrypto:
+class SimulatedLatticeCrypto(IPostQuantumCrypto):
     """
     Simulated lattice-based post-quantum cryptography implementation.
 

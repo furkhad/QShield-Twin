@@ -6,8 +6,8 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 
-from backend.settings import get_settings
 from backend.app.schemas.response import StandardResponse
+from backend.settings import get_settings
 
 router = APIRouter(tags=["status"])
 settings = get_settings()

@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-import uuid
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Text
+from sqlalchemy import Column, DateTime, ForeignKey, String, Text
 
 from backend.base import Base
-
-
-def gen_uuid() -> str:
-    return str(uuid.uuid4())
+from backend.models._common import gen_uuid, utcnow
 
 
 class IdentityClaim(Base):
@@ -27,4 +23,4 @@ class IdentityClaim(Base):
     claimed_id: str = Column(String(128), nullable=False)
     signature: str = Column(Text, nullable=True)
     payload: str = Column(Text, nullable=True)
-    created_at: datetime = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: datetime = Column(DateTime, default=utcnow, nullable=False)

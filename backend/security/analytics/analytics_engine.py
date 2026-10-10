@@ -19,9 +19,8 @@ import io
 import json
 import threading
 import time
-from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Any
-from collections import defaultdict
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -33,6 +32,15 @@ class DetectionResult:
     detected_as_ghost: bool  # True if flagged as ghost
     verification_time_ms: float
     confidence: float
+    # Detector provenance (populated from the feature-based detector). Optional so
+    # the analytics engine remains usable without a detector attached.
+    score: Optional[float] = None
+    detector_version: Optional[str] = None
+    reasons: List[str] = field(default_factory=list)
+    # Whether the detector had enough valid telemetry to decide. ``False`` means
+    # the outcome was unknown/insufficient-data; such events are excluded from the
+    # confusion matrix so they are never miscounted as true negatives.
+    observed: bool = True
 
 
 class AnalyticsEngine:
@@ -66,6 +74,9 @@ class AnalyticsEngine:
             "false_positives": 0,
             "true_negatives": 0,
             "false_negatives": 0,
+            # Events where the detector lacked enough valid telemetry to decide.
+            # Tracked separately and excluded from the confusion matrix.
+            "unknown": 0,
         }
 
         # PQC metrics (updated by orchestrator)
@@ -86,8 +97,21 @@ class AnalyticsEngine:
         # Ledger growth
         self.ledger_entries_collected: List[tuple] = []  # (timestamp, count)
 
-        self.lock = threading.Lock()
+        # Run metadata (seed, scenario, software version) for reproducible,
+        # auditable exports. Populated via set_run_metadata().
+        self.run_metadata: Dict[str, Any] = {}
+
+        self.lock = threading.RLock()
         self.start_time = time.time()
+
+    def set_run_metadata(self, **kwargs: Any) -> None:
+        """Attach metadata (seed, scenario, software version) to this run.
+
+        Exposed in :meth:`metrics`, CSV/JSON exports so a result set can be tied
+        back to the exact configuration that produced it.
+        """
+        with self.lock:
+            self.run_metadata.update(kwargs)
 
     def record_detection(
         self,
@@ -96,6 +120,10 @@ class AnalyticsEngine:
         detected_as_ghost: bool,
         verification_time_ms: float = 0.0,
         confidence: float = 0.5,
+        score: Optional[float] = None,
+        detector_version: Optional[str] = None,
+        reasons: Optional[List[str]] = None,
+        observed: bool = True,
     ) -> None:
         """
         Record a detection event.
@@ -106,6 +134,13 @@ class AnalyticsEngine:
             detected_as_ghost: True if system flagged it as ghost
             verification_time_ms: Time taken for verification
             confidence: Confidence in detection (0.0-1.0)
+            score: Detector anomaly score in [0, 1] (optional provenance)
+            detector_version: Version string of the detector that scored this
+            reasons: Human-readable explanations for the decision
+            observed: False when the detector had insufficient/degraded telemetry
+                to decide (an *unknown* outcome). Unknown events are counted
+                separately and never folded into the confusion matrix as true
+                negatives.
         """
         with self.lock:
             result = DetectionResult(
@@ -115,6 +150,10 @@ class AnalyticsEngine:
                 detected_as_ghost=detected_as_ghost,
                 verification_time_ms=verification_time_ms,
                 confidence=confidence,
+                score=score,
+                detector_version=detector_version,
+                reasons=list(reasons or []),
+                observed=observed,
             )
             self.detections.append(result)
             if len(self.detections) > self.max_history:
@@ -122,8 +161,11 @@ class AnalyticsEngine:
 
             self.stats["detections"] += 1
 
-            # Update confusion matrix
-            if is_ghost and detected_as_ghost:
+            # Update confusion matrix. Unknown outcomes are tracked separately so
+            # missing telemetry is never misrepresented as a true negative.
+            if not observed:
+                self.stats["unknown"] += 1
+            elif is_ghost and detected_as_ghost:
                 self.stats["true_positives"] += 1
             elif is_ghost and not detected_as_ghost:
                 self.stats["false_negatives"] += 1
@@ -151,11 +193,21 @@ class AnalyticsEngine:
         ghosts_count: int,
         detected_count: int,
     ) -> None:
-        """Record attack statistics."""
+        """Record the start of an attack campaign.
+
+        Increments the launched/ spawned counters. Detections discovered later
+        (e.g. when the campaign is stopped) are recorded with
+        :meth:`record_detections` so a single campaign is never counted twice.
+        """
         with self.lock:
             self.attacks_launched += 1
             self.ghosts_spawned += ghosts_count
             self.ghosts_detected += detected_count
+
+    def record_detections(self, detected_count: int) -> None:
+        """Add to the running count of detected ghost identities only."""
+        with self.lock:
+            self.ghosts_detected += max(0, int(detected_count))
 
     def record_pqc_metrics(self, metrics: Dict[str, Any]) -> None:
         """Record PQC performance metrics."""
@@ -193,6 +245,11 @@ class AnalyticsEngine:
                 else 0.0
             )
 
+            # False-positive rate = FP / (FP + TN)
+            false_positive_rate = (
+                fp / (fp + tn) if (fp + tn) > 0 else 0.0
+            )
+
             # Accuracy = (TP + TN) / (TP + TN + FP + FN)
             accuracy = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0.0
 
@@ -225,6 +282,11 @@ class AnalyticsEngine:
                 if elapsed > 0:
                     ledger_growth_rate = (last_count - first_count) / elapsed
 
+            total = self.stats["detections"]
+            unknown = self.stats.get("unknown", 0)
+            observed_count = total - unknown
+            coverage_rate = observed_count / total if total else 0.0
+
             return {
                 "summary": {
                     "total_detections": self.stats["detections"],
@@ -236,11 +298,21 @@ class AnalyticsEngine:
                     "true_negatives": tn,
                     "false_negatives": fn,
                 },
+                # Coverage/uncertainty is reported separately from accuracy: an
+                # unknown outcome is neither a hit nor a miss, and is deliberately
+                # excluded from the confusion matrix above.
+                "observation_coverage": {
+                    "observed": observed_count,
+                    "unknown": unknown,
+                    "total": total,
+                    "coverage_rate": round(coverage_rate, 4),
+                },
                 "detection_accuracy": {
                     "precision": round(precision, 4),
                     "recall": round(recall, 4),
                     "f1_score": round(f1, 4),
                     "accuracy": round(accuracy, 4),
+                    "false_positive_rate": round(false_positive_rate, 4),
                 },
                 "performance": {
                     "average_verification_time_ms": round(avg_verification_time, 2),
@@ -258,6 +330,24 @@ class AnalyticsEngine:
                     "growth_rate_per_second": round(ledger_growth_rate, 2),
                 },
                 "pqc": self.pqc_metrics,
+                # Provenance: these are simulation metrics, not measured field
+                # performance. `is_ghost` is the scenario ground-truth label and
+                # `detected_as_ghost` is the detector output.
+                "metric_source": "simulation",
+                "detector": {
+                    "versions": sorted(
+                        {
+                            d.detector_version
+                            for d in self.detections
+                            if d.detector_version
+                        }
+                    ),
+                    "scored_detections": sum(
+                        1 for d in self.detections if d.score is not None
+                    ),
+                    "unknown_detections": unknown,
+                },
+                "run_metadata": dict(self.run_metadata),
             }
 
     def export_csv(self) -> str:
@@ -266,7 +356,8 @@ class AnalyticsEngine:
         writer = csv.writer(output)
         writer.writerow([
             "timestamp", "device_id", "is_ghost", "detected_as_ghost",
-            "verification_time_ms", "confidence"
+            "observed", "verification_time_ms", "confidence", "score",
+            "detector_version",
         ])
 
         with self.lock:
@@ -276,8 +367,11 @@ class AnalyticsEngine:
                     detection.device_id,
                     detection.is_ghost,
                     detection.detected_as_ghost,
+                    detection.observed,
                     detection.verification_time_ms,
                     detection.confidence,
+                    detection.score if detection.score is not None else "",
+                    detection.detector_version or "",
                 ])
 
         return output.getvalue()

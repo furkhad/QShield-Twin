@@ -28,9 +28,9 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Any
 from collections import deque
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass

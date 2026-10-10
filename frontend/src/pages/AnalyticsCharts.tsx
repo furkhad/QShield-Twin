@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { BarChart3, TrendingUp, Download } from 'lucide-react'
+import { extractDetectionMetrics, extractTrust, extractSecurityCounters, extractVerification, type DetectionMetrics, type TrustMetrics, type VerificationMetrics } from '../lib/metrics'
 
 // Type definition for chart dataset configuration
 interface ChartData {
@@ -46,8 +47,10 @@ export default function AnalyticsCharts() {
     return <div className="text-slate-400 text-center py-12">Loading charts...</div>
   }
 
-  const analytics = metrics.analytics.detection_metrics || {}
-  const verification = metrics.verification || {}
+  const analytics = extractDetectionMetrics(metrics.analytics)
+  const trust = extractTrust(metrics.status)
+  const counters = extractSecurityCounters(metrics.status)
+  const verification = extractVerification(metrics.verification)
 
   return (
     <div className="space-y-8">
@@ -94,7 +97,7 @@ export default function AnalyticsCharts() {
         >
           {selectedChart === 'accuracy' && <AccuracyChart analytics={analytics} />}
           {selectedChart === 'detection' && <ErrorAnalysisChart analytics={analytics} />}
-          {selectedChart === 'trust' && <TrustChart metrics={metrics} />}
+          {selectedChart === 'trust' && <TrustChart trust={trust} />}
           {selectedChart === 'performance' && <PerformanceChart verification={verification} />}
         </motion.div>
 
@@ -106,18 +109,18 @@ export default function AnalyticsCharts() {
         ]} />
 
         <MetricsColumn title="Verification Metrics" metrics={[
-          { label: 'Avg Time', value: `${verification.average_time?.toFixed(2)}ms` || 'N/A', color: 'yellow' },
-          { label: 'Acceptance Rate', value: `${(verification.acceptance_rate * 100).toFixed(1)}%` || 'N/A', color: 'pink' },
-          { label: 'Total Verifications', value: verification.total_verifications || 0, color: 'cyan' },
+          { label: 'Avg Propagation Delay', value: `${verification.avgPropagationMs.toFixed(2)}ms`, color: 'yellow' },
+          { label: 'Acceptance Rate', value: `${(verification.acceptanceRate * 100).toFixed(1)}%`, color: 'pink' },
+          { label: 'Total Verifications', value: verification.total, color: 'cyan' },
         ]} />
       </div>
 
       {/* Additional Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Devices Analyzed" value={metrics.status.processed_joins} icon="📊" />
-        <StatCard label="Packets Processed" value={metrics.status.processed_packets} icon="📡" />
-        <StatCard label="Ghost Nodes" value={metrics.status.ghost_nodes} icon="👻" />
-        <StatCard label="Avg Trust Score" value={`${(metrics.status.trust_metrics?.average_score * 100).toFixed(0)}/100`} icon="🔐" />
+        <StatCard label="Devices Analyzed" value={counters.processed_joins} icon="📊" />
+        <StatCard label="Packets Processed" value={counters.processed_packets} icon="📡" />
+        <StatCard label="Ghost Nodes" value={counters.ghost_nodes} icon="👻" />
+        <StatCard label="Avg Trust Score" value={`${(trust.average * 100).toFixed(0)}/100`} icon="🔐" />
       </div>
 
       {/* Chart Export */}
@@ -132,7 +135,7 @@ export default function AnalyticsCharts() {
 }
 
 // Displays animated progress bars for detection accuracy, precision, recall, and F1 score
-function AccuracyChart({ analytics }: any) {
+function AccuracyChart({ analytics }: { analytics: DetectionMetrics }) {
   const metrics = ['Accuracy', 'Precision', 'Recall', 'F1 Score']
   const values = [
     analytics.accuracy * 100,
@@ -170,23 +173,23 @@ function AccuracyChart({ analytics }: any) {
   )
 }
 
-// Renders a confusion matrix visualization (TP, TN, FP, FN)
-function ErrorAnalysisChart({ analytics }: any) {
+// Renders the confusion matrix (TP, TN, FP, FN) from the real confusion counts.
+function ErrorAnalysisChart({ analytics }: { analytics: DetectionMetrics }) {
   const data = [
-    { label: 'False Positives', value: analytics.false_positives || 0, color: 'orange' },
-    { label: 'False Negatives', value: analytics.false_negatives || 0, color: 'red' },
-    { label: 'True Positives', value: Math.max(0, (analytics.precision * 100).toFixed(0)), color: 'emerald' },
-    { label: 'True Negatives', value: Math.max(0, ((1 - analytics.accuracy) * 100).toFixed(0)), color: 'blue' },
+    { label: 'True Positives', value: analytics.true_positives, classes: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' },
+    { label: 'True Negatives', value: analytics.true_negatives, classes: 'bg-blue-500/10 border-blue-500/30 text-blue-400' },
+    { label: 'False Positives', value: analytics.false_positives, classes: 'bg-orange-500/10 border-orange-500/30 text-orange-400' },
+    { label: 'False Negatives', value: analytics.false_negatives, classes: 'bg-red-500/10 border-red-500/30 text-red-400' },
   ]
 
   return (
     <div>
-      <h3 className="text-lg font-semibold text-slate-100 mb-6">Confusion Matrix Analysis</h3>
+      <h3 className="text-lg font-semibold text-slate-100 mb-6">Confusion Matrix (ground truth vs. detector)</h3>
       <div className="grid grid-cols-2 gap-4">
         {data.map(item => (
-          <div key={item.label} className={`p-4 rounded-lg bg-${item.color}-500/10 border border-${item.color}-500/30`}>
-            <p className={`text-sm text-${item.color}-400`}>{item.label}</p>
-            <p className={`text-3xl font-bold text-${item.color}-400`}>{item.value}</p>
+          <div key={item.label} className={`p-4 rounded-lg border ${item.classes}`}>
+            <p className="text-sm">{item.label}</p>
+            <p className="text-3xl font-bold">{item.value}</p>
           </div>
         ))}
       </div>
@@ -194,13 +197,13 @@ function ErrorAnalysisChart({ analytics }: any) {
   )
 }
 
-// Shows device trust distribution as a percentage bar chart
-function TrustChart({ metrics }: any) {
-  const trust = metrics.status.trust_metrics || {}
+// Shows device trust distribution using the real per-decision counts.
+function TrustChart({ trust }: { trust: TrustMetrics }) {
   const distribution = [
-    { label: 'Accepted', count: metrics.status.legitimate_devices, color: 'emerald' },
-    { label: 'Monitored', count: Math.max(0, Math.round(metrics.status.legitimate_devices * 0.1)), color: 'yellow' },
-    { label: 'Rejected', count: Math.max(0, Math.round(metrics.status.legitimate_devices * 0.05)), color: 'orange' },
+    { label: 'Accepted', count: trust.accepted, classes: 'bg-emerald-500/20 text-emerald-400', bar: 'bg-emerald-500' },
+    { label: 'Monitored', count: trust.monitored, classes: 'bg-yellow-500/20 text-yellow-400', bar: 'bg-yellow-500' },
+    { label: 'Rejected', count: trust.rejected, classes: 'bg-orange-500/20 text-orange-400', bar: 'bg-orange-500' },
+    { label: 'Blacklisted', count: trust.blacklisted, classes: 'bg-red-500/20 text-red-400', bar: 'bg-red-500' },
   ]
 
   const total = distribution.reduce((sum, d) => sum + d.count, 0)
@@ -214,16 +217,16 @@ function TrustChart({ metrics }: any) {
           return (
             <div key={item.label}>
               <div className="flex justify-between mb-2">
-                <span className={`text-slate-300`}>{item.label}</span>
-                <span className={`font-semibold text-${item.color}-400`}>{item.count}</span>
+                <span className="text-slate-300">{item.label}</span>
+                <span className={`font-semibold ${item.classes.split(' ').pop()}`}>{item.count}</span>
               </div>
               <motion.div
-                className={`h-2 bg-${item.color}-500/20 rounded-full overflow-hidden`}
+                className={`h-2 rounded-full overflow-hidden ${item.classes.split(' ')[0]}`}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
               >
                 <motion.div
-                  className={`h-full bg-${item.color}-500`}
+                  className={`h-full ${item.bar}`}
                   initial={{ width: 0 }}
                   animate={{ width: `${percentage}%` }}
                   transition={{ duration: 1 }}
@@ -235,18 +238,18 @@ function TrustChart({ metrics }: any) {
       </div>
       <div className="text-center pt-4 border-t border-slate-700">
         <p className="text-sm text-slate-400">Average Trust Score</p>
-        <p className="text-3xl font-bold text-cyan-400">{(trust.average_score * 100).toFixed(0)}/100</p>
+        <p className="text-3xl font-bold text-cyan-400">{(trust.average * 100).toFixed(0)}/100</p>
       </div>
     </div>
   )
 }
 
 // Displays verification performance metrics against target thresholds
-function PerformanceChart({ verification }: any) {
+function PerformanceChart({ verification }: { verification: VerificationMetrics }) {
   const metrics = [
-    { label: 'Verification Time', value: verification.average_time?.toFixed(2), unit: 'ms', target: 10 },
-    { label: 'Acceptance Rate', value: (verification.acceptance_rate * 100).toFixed(1), unit: '%', target: 95 },
-    { label: 'Confidence Score', value: (verification.average_confidence * 100).toFixed(1), unit: '%', target: 90 },
+    { label: 'Verification Time', value: verification.avgPropagationMs.toFixed(2), unit: 'ms', target: 10 },
+    { label: 'Acceptance Rate', value: (verification.acceptanceRate * 100).toFixed(1), unit: '%', target: 95 },
+    { label: 'Confidence Score', value: (verification.avgConfidence * 100).toFixed(1), unit: '%', target: 90 },
   ]
 
   return (
@@ -281,22 +284,39 @@ function PerformanceChart({ verification }: any) {
   )
 }
 
-// Reusable column displaying a title and list of metric cards
-function MetricsColumn({ title, metrics }: any) {
+// Reusable column displaying a title and list of metric cards.
+type Tone = 'blue' | 'emerald' | 'purple' | 'yellow' | 'pink' | 'cyan'
+
+const TONE_CLASSES: Record<Tone, string> = {
+  blue: 'bg-blue-500/10 border-blue-500/30 text-blue-400',
+  emerald: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400',
+  purple: 'bg-purple-500/10 border-purple-500/30 text-purple-400',
+  yellow: 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400',
+  pink: 'bg-pink-500/10 border-pink-500/30 text-pink-400',
+  cyan: 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400',
+}
+
+interface MetricItem {
+  label: string
+  value: string | number
+  color: Tone
+}
+
+function MetricsColumn({ title, metrics }: { title: string; metrics: MetricItem[] }) {
   return (
     <div className="bg-gradient-to-br from-slate-800 to-slate-900 border border-slate-700 rounded-lg p-6">
       <h3 className="text-lg font-semibold text-slate-100 mb-4">{title}</h3>
       <div className="space-y-3">
-        {metrics.map((metric: any, idx: number) => (
+        {metrics.map((metric, idx) => (
           <motion.div
             key={metric.label}
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: idx * 0.1 }}
-            className={`p-3 rounded-lg bg-${metric.color}-500/10 border border-${metric.color}-500/30`}
+            className={`p-3 rounded-lg border ${TONE_CLASSES[metric.color]}`}
           >
-            <p className={`text-xs text-${metric.color}-400`}>{metric.label}</p>
-            <p className={`text-2xl font-bold text-${metric.color}-400 mt-1`}>{metric.value}</p>
+            <p className="text-xs">{metric.label}</p>
+            <p className="text-2xl font-bold mt-1">{metric.value}</p>
           </motion.div>
         ))}
       </div>
@@ -305,7 +325,7 @@ function MetricsColumn({ title, metrics }: any) {
 }
 
 // Single stat card with icon, label, and value
-function StatCard({ label, value, icon }: any) {
+function StatCard({ label, value, icon }: { label: string; value: string | number; icon: React.ReactNode }) {
   return (
     <div className="bg-gradient-to-br from-slate-800 to-slate-900 border border-slate-700 rounded-lg p-4">
       <div className="text-3xl mb-2">{icon}</div>

@@ -10,16 +10,22 @@ Exposes complete security orchestrator functionality:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Query
 
-from backend.digital_twin.manager import DigitalTwinManager
-from backend.simulation.environment import SimConfig
+from backend.app.schemas.requests import (
+    AccessControlDemoRequest,
+    AttackStartRequest,
+    AttackStopRequest,
+    BlacklistRequest,
+    RestoreRequest,
+)
 from backend.app.schemas.response import StandardResponse
+from backend.digital_twin.manager import get_manager
 
 router = APIRouter(prefix="/security", tags=["security"])
 
-# Manager instance for security operations
-_manager = DigitalTwinManager(config=SimConfig())
+# Shared manager so security state matches the device/network/simulation APIs.
+_manager = get_manager()
 
 
 # ============================================================================
@@ -28,15 +34,14 @@ _manager = DigitalTwinManager(config=SimConfig())
 
 
 @router.post("/attack/start", response_model=StandardResponse)
-def attack_start(payload: dict = Body(...)):
+def attack_start(payload: AttackStartRequest):
     """Start a Sybil attack campaign with configurable ghost nodes."""
-    attacker = payload.get("attacker", "attacker-1")
-    count = int(payload.get("count", 10))
-    intensity = float(payload.get("intensity", 1.0))
-    duration = float(payload.get("duration", 60.0))
     try:
         result = _manager.security.start_attack(
-            attacker_id=attacker, count=count, intensity=intensity, duration=duration
+            attacker_id=payload.attacker,
+            count=payload.count,
+            intensity=payload.intensity,
+            duration=payload.duration,
         )
         return StandardResponse(status="ok", message="Attack started", data=result)
     except Exception as exc:
@@ -46,11 +51,10 @@ def attack_start(payload: dict = Body(...)):
 
 
 @router.post("/attack/stop", response_model=StandardResponse)
-def attack_stop(payload: dict = Body(...)):
+def attack_stop(payload: AttackStopRequest):
     """Stop an active Sybil attack campaign."""
-    attacker = payload.get("attacker", "attacker-1")
     try:
-        result = _manager.security.stop_attack(attacker)
+        result = _manager.security.stop_attack(payload.attacker)
         return StandardResponse(status="ok", message="Attack stopped", data=result)
     except Exception as exc:
         return StandardResponse(
@@ -120,12 +124,17 @@ def access_control_overview():
 
 
 @router.get("/access-control/devices", response_model=StandardResponse)
-def access_control_devices():
+def access_control_devices(limit: int = Query(500, ge=1, le=1000)):
     """Return access-control devices with security state."""
     try:
         state = _manager.status()
         devices = state.get("devices", [])
-        return StandardResponse(status="ok", message="Access-control devices", data={"devices": devices, "count": len(devices)})
+        total = len(devices)
+        return StandardResponse(
+            status="ok",
+            message="Access-control devices",
+            data={"devices": devices[:limit], "count": min(total, limit), "total": total},
+        )
     except Exception as exc:
         return StandardResponse(status="error", message="Failed to get devices", errors={"detail": str(exc)})
 
@@ -171,12 +180,14 @@ def access_control_device_detail(device_id: str):
 
 
 @router.post("/demo/access-control", response_model=StandardResponse)
-def access_control_demo(payload: dict = Body(default={})): 
+def access_control_demo(payload: AccessControlDemoRequest | None = None):
     """Run the SecureAccess access-control simulation with legitimate and ghost devices."""
+    legitimate_count = payload.legitimate_count if payload else 100
+    ghost_count = payload.ghost_count if payload else 20
     try:
-        legitimate_count = int(payload.get("legitimate_count", 100))
-        ghost_count = int(payload.get("ghost_count", 20))
-        result = _manager.run_access_control_demo(legitimate_count=legitimate_count, ghost_count=ghost_count)
+        result = _manager.run_access_control_demo(
+            legitimate_count=legitimate_count, ghost_count=ghost_count
+        )
         return StandardResponse(status="ok", message="Access-control demo completed", data=result)
     except Exception as exc:
         return StandardResponse(status="error", message="Failed to run access-control demo", errors={"detail": str(exc)})
@@ -188,7 +199,7 @@ def access_control_demo(payload: dict = Body(default={})):
 
 
 @router.get("/trust", response_model=StandardResponse)
-def get_trust(device_id: str | None = None):
+def get_trust(device_id: str | None = None, limit: int = Query(500, ge=1, le=1000)):
     """Get trust scores for device(s)."""
     try:
         if device_id:
@@ -210,16 +221,21 @@ def get_trust(device_id: str | None = None):
                     status="ok", message="No trust record", data={"device_id": device_id}
                 )
         else:
-            # Return all trust scores
-            all_scores = {}
-            for device_id, rec in _manager.security.trust.get_all_trust_scores().items():
-                all_scores[device_id] = {
+            # Return trust scores (bounded).
+            records = list(_manager.security.trust.get_all_trust_scores().items())
+            total = len(records)
+            all_scores = {
+                dev_id: {
                     "score": rec.score,
                     "decision": rec.decision,
                     "risk_level": rec.risk_level,
                 }
+                for dev_id, rec in records[:limit]
+            }
             return StandardResponse(
-                status="ok", message="All trust scores", data={"scores": all_scores}
+                status="ok",
+                message="All trust scores",
+                data={"scores": all_scores, "count": len(all_scores), "total": total},
             )
     except Exception as exc:
         return StandardResponse(
@@ -228,7 +244,7 @@ def get_trust(device_id: str | None = None):
 
 
 @router.get("/trust/high-risk", response_model=StandardResponse)
-def get_high_risk_devices(threshold: float = Query(0.4)):
+def get_high_risk_devices(threshold: float = Query(0.4, ge=0.0, le=1.0)):
     """Get devices below trust threshold (high risk)."""
     try:
         devices = _manager.security.trust.get_high_risk_devices(threshold)
@@ -280,11 +296,25 @@ def get_ledger():
         )
 
 
+@router.get("/ledger/integrity", response_model=StandardResponse)
+def ledger_integrity():
+    """Verify the per-shard hash chain of the local audit ledger."""
+    try:
+        result = _manager.security.ledger.verify_integrity()
+        return StandardResponse(status="ok", message="Ledger integrity check", data=result)
+    except Exception as exc:
+        return StandardResponse(
+            status="error", message="Failed to verify ledger integrity", errors={"detail": str(exc)}
+        )
+
+
 @router.get("/ledger/device/{device_id}", response_model=StandardResponse)
-def get_ledger_device(device_id: str):
+def get_ledger_device(device_id: str, limit: int = Query(200, ge=1, le=1000)):
     """Get ledger entries for a specific device."""
     try:
         entries = _manager.security.ledger.query_device(device_id)
+        total = len(entries)
+        entries = entries[-limit:]
         device_status = _manager.security.ledger.get_device_status(device_id)
         return StandardResponse(
             status="ok",
@@ -301,6 +331,7 @@ def get_ledger_device(device_id: str):
                     for e in entries
                 ],
                 "count": len(entries),
+                "total": total,
             },
         )
     except Exception as exc:
@@ -328,12 +359,10 @@ def get_shard_stats(shard_id: int):
 
 
 @router.post("/ledger/blacklist", response_model=StandardResponse)
-def post_blacklist(payload: dict = Body(...)):
+def post_blacklist(payload: BlacklistRequest):
     """Blacklist a device (mark as untrusted)."""
-    device_id = payload.get("device_id")
-    reason = payload.get("reason", "manual")
     try:
-        entry = _manager.security.ledger.blacklist(device_id, reason)
+        entry = _manager.security.ledger.blacklist(payload.device_id, payload.reason)
         return StandardResponse(
             status="ok", message="Blacklisted", data={"entry": entry.__dict__}
         )
@@ -344,11 +373,10 @@ def post_blacklist(payload: dict = Body(...)):
 
 
 @router.post("/ledger/restore", response_model=StandardResponse)
-def post_restore(payload: dict = Body(...)):
+def post_restore(payload: RestoreRequest):
     """Restore a blacklisted device."""
-    device_id = payload.get("device_id")
     try:
-        entry = _manager.security.ledger.restore(device_id)
+        entry = _manager.security.ledger.restore(payload.device_id)
         return StandardResponse(
             status="ok", message="Restored", data={"entry": entry.__dict__}
         )
@@ -478,10 +506,10 @@ def analytics_export_csv():
 
 
 @router.get("/ghosts", response_model=StandardResponse)
-def list_ghosts():
-    """List all ghost nodes."""
+def list_ghosts(limit: int = Query(500, ge=1, le=1000)):
+    """List ghost nodes (bounded)."""
     try:
-        ghosts = _manager.security.ghost.list_ghosts()
+        ghosts = _manager.security.ghost.list_ghosts()[:limit]
         data = {
             ghost.device_id: {
                 "name": ghost.name,
@@ -494,7 +522,9 @@ def list_ghosts():
             for ghost in ghosts
         }
         return StandardResponse(
-            status="ok", message="Ghost nodes list", data={"ghosts": data}
+            status="ok",
+            message="Ghost nodes list",
+            data={"ghosts": data, "count": len(data)},
         )
     except Exception as exc:
         return StandardResponse(

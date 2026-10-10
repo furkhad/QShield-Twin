@@ -8,12 +8,11 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from backend.digital_twin.manager import DigitalTwinManager
+from backend.digital_twin.manager import DigitalTwinManager  # noqa: E402 (path set above)
 
 
 def print_header(text: str) -> None:
@@ -60,7 +59,6 @@ def display_results(result: Dict[str, Any], metrics: Dict[str, Any]) -> None:
     trust = metrics.get("trust", {})
     verification = metrics.get("verification", {})
     analytics = metrics.get("analytics", {})
-    attack = metrics.get("attack", {})
     ledger = metrics.get("ledger", {})
 
     print("\n  ACCESS-CONTROL NETWORK OVERVIEW")

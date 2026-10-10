@@ -1,12 +1,86 @@
-[tool.poetry]
+[project]
 name = "qshield-twin"
-version = "0.1.0"
-description = "Quantum-resilient Sybil defense digital twin"
-authors = ["QShield Twin"]
+version = "0.2.0"
+description = "Quantum-resilient Sybil-defense digital twin for cyber-physical access control (research prototype)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "QShield Twin" }]
+# Declarations are intentionally readable (no exact pins). The authoritative
+# resolution is captured in the checked-in uv.lock, generated with `uv lock`.
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy",
+    "pydantic",
+    "pydantic-settings",
+    "simpy",
+    "networkx",
+]
 
-[tool.poetry.dependencies]
-python = "^3.12"
+[dependency-groups]
+# Development and testing only. Never required at runtime.
+dev = [
+    "pytest",
+    "pytest-cov",
+    # Required by starlette.testclient (used via fastapi.testclient.TestClient).
+    # Starlette >= 1.x prefers httpx2 and deprecates httpx.
+    "httpx2",
+    "ruff",
+]
 
-[build-system]
-requires = ["poetry-core>=1.5.0"]
-build-backend = "poetry.core.masonry.api"
+[tool.uv]
+# This is an application, not a distributable library: do not build/install
+# the project itself into the environment.
+package = false
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+filterwarnings = [
+    "error::DeprecationWarning:backend.*",
+]
+
+[tool.coverage.run]
+source = ["backend"]
+branch = true
+omit = [
+    "*/__pycache__/*",
+    "backend/.venv*",
+]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+extend-exclude = ["frontend", ".venv", ".venv313"]
+
+[tool.ruff.lint]
+# Focused, high-signal rule set. We intentionally do NOT enable the `UP`
+# (pyupgrade) modernization rules: this project consistently uses `typing.Dict`
+# / `List` / `Optional` with `from __future__ import annotations`, and
+# mass-rewriting that style would add churn without behavioural benefit.
+select = ["E", "F", "W", "I", "B"]
+ignore = [
+    "E203",   # whitespace before ':' (black-compatible)
+    "E501",   # line length is handled by the formatter
+    "B008",   # FastAPI Depends()/Query() in defaults is idiomatic
+]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/models/__init__.py" = ["F401"]
+"backend/app/core/__init__.py" = ["F401"]
+"backend/app/repositories/__init__.py" = ["F401"]
+"backend/app/schemas/__init__.py" = ["F401"]
+"backend/app/services/__init__.py" = ["F401"]
+"backend/app/utils/__init__.py" = ["F401"]
+"tests/*" = ["E402"]

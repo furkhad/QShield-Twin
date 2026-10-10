@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-import uuid
 
-from sqlalchemy import Column, String, DateTime, Boolean, Float
+from sqlalchemy import Boolean, Column, DateTime, Float, String
 
 from backend.base import Base
-
-
-def gen_uuid() -> str:
-    return str(uuid.uuid4())
+from backend.models._common import gen_uuid, utcnow
 
 
 class Device(Base):
@@ -26,8 +22,8 @@ class Device(Base):
     name: str = Column(String(128), nullable=False)
     model: str = Column(String(64), nullable=True)
     is_active: bool = Column(Boolean, default=True, nullable=False)
-    created_at: datetime = Column(DateTime, default=datetime.utcnow, nullable=False)
-    last_seen: datetime = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: datetime = Column(DateTime, default=utcnow, nullable=False)
+    last_seen: datetime = Column(DateTime, default=utcnow, nullable=False)
 
     # Simulated physical coordinates (meters). Optional for initial models.
     pos_x: float = Column(Float, default=0.0, nullable=False)
