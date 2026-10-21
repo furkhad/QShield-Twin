@@ -1,0 +1,133 @@
+# QShield Twin — PRODUCTION stack.
+#
+# This is the production deployment path. It is completely separate from
+# `docker-compose.yml` (the development stack, which runs Vite + uvicorn with
+# bind-mounted sources); that file is untouched and still works.
+#
+#   cp .env.production.example .env.production
+#   #   ... edit SECRET_KEY, API_TOKEN and the DB password ...
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+#
+# Images are selected by `QSHIELD_IMAGE_TAG` and can either be built locally
+# (see scripts/build-prod-images.sh) or pulled from GitHub Container Registry
+# once a release has been published — see docs/DEPLOYMENT.md.
+#
+# Guarantees enforced here:
+#   * only the frontend is exposed, and only on the loopback interface;
+#   * the backend and PostgreSQL are on an internal network with no host ports;
+#   * no source/bind mounts;
+#   * the backend credentials are required (no insecure defaults) and never
+#     reach the browser bundle;
+#   * PostgreSQL data lives in a named volume and survives restarts/upgrades.
+
+name: qshield-twin-prod
+
+x-backend-image: &backend-image
+  image: ghcr.io/furkhad/qshield-twin-backend:${QSHIELD_IMAGE_TAG:-local}
+
+x-frontend-image: &frontend-image
+  image: ghcr.io/furkhad/qshield-twin-frontend:${QSHIELD_IMAGE_TAG:-local}
+
+services:
+  db:
+    # Pinned to a specific PostgreSQL release: upgrades are explicit.
+    image: postgres:16.15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-qshield}
+      POSTGRES_USER: ${POSTGRES_USER:-qshield}
+      # No default: fail fast rather than start with a guessable password.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env.production.example)}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # Warm stand-by replication is NOT configured: this is a single-node volume.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    stop_grace_period: 30s
+    networks:
+      - internal
+
+  backend:
+    <<: *backend-image
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # PostgreSQL is the only supported production database. SQLite is rejected
+      # by the application's production guard (backend/settings.py). psycopg 3 is
+      # installed in the backend image (see pyproject.toml).
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-qshield}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-qshield}
+      # Required in production. Generate with:
+      #   python -c "import secrets; print(secrets.token_urlsafe(48))"
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set (see .env.production.example)}
+      # Shared deployment token injected by the frontend proxy (server-side
+      # only). NOT user authentication.
+      API_TOKEN: ${API_TOKEN:?API_TOKEN must be set (see .env.production.example)}
+      # Hosts the backend accepts. Requests arrive via the frontend proxy with
+      # the browser's Host header preserved, so this must include the host(s)
+      # users type into the browser.
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS must be set (see .env.production.example)}
+      # All browser traffic is same-origin through the frontend proxy, so CORS
+      # needs no cross-origin allowances. Must not contain "*".
+      CORS_ORIGINS: ${CORS_ORIGINS:-[]}
+      # Request/connection protection.
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-600}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-1000000}
+      MAX_WS_CONNECTIONS: ${MAX_WS_CONNECTIONS:-50}
+    depends_on:
+      db:
+        condition: service_healthy
+    # The image already runs the backend as a non-root user (uid 10001).
+    # Uvicorn handles SIGTERM and drains in-flight requests; give it room.
+    stop_grace_period: 30s
+    networks:
+      - internal
+
+  frontend:
+    <<: *frontend-image
+    restart: unless-stopped
+    environment:
+      # Backend location inside the stack (never published to the host).
+      QSHIELD_BACKEND_HOST: backend
+      QSHIELD_BACKEND_PORT: "8000"
+      # Hosts allowed by the edge proxy (nginx). Space-separated; include the
+      # Host header(s) users will use.
+      QSHIELD_ALLOWED_HOSTS: ${QSHIELD_ALLOWED_HOSTS:?QSHIELD_ALLOWED_HOSTS must be set (see .env.production.example)}
+      # May be "_" when serving on a default port, or an explicit hostname.
+      QSHIELD_SERVER_NAME: ${QSHIELD_SERVER_NAME:-_}
+      # Server-side secret injected as X-API-Token on proxied /api requests. It
+      # must equal the backend's API_TOKEN. It is never part of any image or the
+      # browser bundle. No default: fail fast if unset.
+      QSHIELD_API_TOKEN: ${API_TOKEN:?API_TOKEN must be set (see .env.production.example)}
+    # Bind to loopback by default. Change to "0.0.0.0:8080" (or put a TLS
+    # terminator in front) only when the deployment requires remote access; the
+    # API is protected by a single shared token, not per-user authentication.
+    ports:
+      - "${QSHIELD_BIND_ADDRESS:-127.0.0.1}:${QSHIELD_FRONTEND_PORT:-8080}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    stop_grace_period: 15s
+    networks:
+      - internal
+
+volumes:
+  # Persistent PostgreSQL state. `docker compose down` keeps it; only
+  # `docker compose down -v` (or an explicit volume removal) destroys it.
+  postgres-data:
+
+networks:
+  # A single internal bridge: no host-published ports for db/backend. The
+  # frontend reaches the backend by service name and the outside world reaches
+  # only the frontend's published port.
+  internal:
+    driver: bridge

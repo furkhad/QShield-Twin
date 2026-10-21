@@ -1,0 +1,79 @@
+# Production frontend image for QShield Twin.
+#
+# Multi-stage build:
+#   1. `build`  — installs dependencies from the lockfile and compiles the Vite
+#                 production bundle (`dist/`). No dev server, no source mounts.
+#   2. runtime  — nginx serving the compiled static assets and reverse-proxying
+#                 `/api` (REST + WebSocket) to the backend.
+#
+# The image is a *static* artifact plus proxy configuration: no Node, no
+# `node_modules`, and no application source are shipped at runtime.
+#
+# Build context is the `frontend/` directory:
+#
+#   docker build -f frontend/Dockerfile.prod -t ghcr.io/furkhad/qshield-twin-frontend:0.2.0 ./frontend
+#
+# SECURITY: only `VITE_`-prefixed values may reach the build. Anything prefixed
+# `VITE_` is inlined into the browser bundle and is therefore PUBLIC — never pass
+# a secret (e.g. the backend API token) to this build. The API token is injected
+# at request time by nginx (see frontend/nginx/default.conf.template), from a
+# value that only ever exists in the server-side environment.
+
+# ---------------------------------------------------------------------------
+# Stage 1: build the static bundle
+# ---------------------------------------------------------------------------
+FROM node:22-alpine AS build
+
+WORKDIR /app
+
+# Reproducible install from the committed lockfile. `npm ci` fails the build on
+# any install error (no swallowed failures).
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Application sources required to compile the bundle.
+COPY tsconfig.json vite.config.ts tailwind.config.js postcss.config.js index.html ./
+COPY src ./src
+
+# `vite build` reads only `VITE_`-prefixed variables; none are secrets.
+RUN npm run build
+
+# ---------------------------------------------------------------------------
+# Stage 2: serve the bundle behind nginx
+# ---------------------------------------------------------------------------
+FROM nginx:1.30.6-alpine AS runtime
+
+# Serve the compiled React/Vite application with Nginx.
+COPY --from=build /app/dist/ /usr/share/nginx/html/
+
+# Replace the default site with the QShield server template. The template is
+# rendered by the nginx image's entrypoint using `envsubst` on the variables it
+# is told to substitute, preserving nginx's own variables.
+# The API token is supplied at container runtime by Compose.
+RUN rm -f /etc/nginx/conf.d/default.conf
+COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
+
+# Non-secret defaults consumed by the nginx template at container start.
+ENV QSHIELD_BACKEND_HOST=backend \
+    QSHIELD_BACKEND_PORT=8000 \
+    QSHIELD_ALLOWED_HOSTS='localhost 127.0.0.1' \
+    QSHIELD_SERVER_NAME='_'
+
+# QSHIELD_API_TOKEN is intentionally not defined in the image.
+# Production Compose supplies it only at container runtime.
+# The nginx image templates `/etc/nginx/templates/*.template` -> `/etc/nginx/conf.d/*`
+# with `envsubst`, but only substitutes the variables listed here so that nginx's
+# own `$host`/`$http_upgrade`/... directives survive templating.
+ENV NGINX_ENVSUBST_TEMPLATE_SUFFIX=.template \
+    NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx/conf.d \
+    NGINX_ENVSUBST_FILTER='^QSHIELD_'
+
+# nginx's alpine image runs master as root and workers as the `nginx` user, so
+# the cache/temp directories need no extra chmod. Explicit healthcheck so a
+# broken proxy/asset path is visible to Compose and orchestrators.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget --quiet --tries=1 --spider http://127.0.0.1:8080/healthz || exit 1
+
+EXPOSE 8080
+
+# Default nginx entrypoint (renders templates, then starts nginx).

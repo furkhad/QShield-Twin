@@ -7,6 +7,13 @@ from collections.abc import Generator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+# Import the model modules for their side effect of registering every table on
+# ``Base.metadata``. Without this, ``init_db`` would create no tables at all:
+# ``backend.models`` is otherwise only imported by ``backend.repositories``,
+# which no request path currently uses (the app keeps device state in memory).
+# This is a no-op for SQLite development and a hard requirement for PostgreSQL,
+# where the schema must actually exist.
+import backend.models  # noqa: F401  (registers tables on Base.metadata)
 from backend.base import Base
 from backend.settings import get_settings
 

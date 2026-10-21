@@ -16,6 +16,9 @@ dependencies = [
     "pydantic-settings",
     "simpy",
     "networkx",
+    # PostgreSQL driver (psycopg 3) — required to run in `production`, which
+    # rejects SQLite. SQLite paths never import it.
+    "psycopg[binary]",
 ]
 
 [dependency-groups]

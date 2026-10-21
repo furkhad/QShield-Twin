@@ -189,14 +189,35 @@ validation. Tests never touch the developer's real `qshield_twin.db`.
 
 ## Docker
 
+### Development
+
 ```bash
 cp .env.example .env    # set SECRET_KEY etc. if you plan to run in production mode
 docker compose up --build
 ```
 
-Backend on `:8000`, frontend on `:5173`. This requires the Compose **v2**
-plugin (`docker compose`). The backend image runs as a non-root user and ships a
-container healthcheck. See `docs/ARCHITECTURE.md` for production guidance.
+Backend on `:8000`, frontend on `:5173` (Vite dev server with hot reload). This
+requires the Compose **v2** plugin (`docker compose`). The backend image runs as
+a non-root user and ships a container healthcheck. Development users do **not**
+need the production containers.
+
+### Production
+
+A separate, isolated production stack lives in `docker-compose.prod.yml`: a
+multi-stage build serving the compiled frontend through nginx, a non-root
+backend, and PostgreSQL — with no source mounts and only the frontend published
+(loopback by default).
+
+```bash
+scripts/build-prod-images.sh local                  # build images (nothing is pushed)
+cp .env.production.example .env.production          # then fill in the secrets
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+```
+
+Full instructions — including the future `ghcr.io/furkhad/qshield-twin-*`
+pull-and-run sequence, secrets, persistence and non-claims — are in
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). See `docs/ARCHITECTURE.md` for the
+component/data-flow overview.
 
 ## Documentation
 

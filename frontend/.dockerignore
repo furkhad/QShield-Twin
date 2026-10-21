@@ -1,7 +1,23 @@
+# Build context for frontend/Dockerfile.prod (the production image).
+#
+# The context is `frontend/`; keep it to exactly what the Vite build needs.
+# Secrets are never required to build the bundle — anything `VITE_`-prefixed
+# would be public — so all `.env*` files are excluded deliberately.
+
 node_modules
 dist
 .vite
+.bundle-secret-check
 npm-debug.log*
+yarn-error.log*
+
+# Environment / secrets (never needed to build a public bundle)
 .env
 .env.*
 !.env.example
+
+# Local tooling / docs
+scripts
+Dockerfile
+Dockerfile.prod
+README.md
