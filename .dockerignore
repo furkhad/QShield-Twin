@@ -22,10 +22,15 @@ logs/
 # Secrets
 .env
 .env.*
+.env.production
+!.env.example
+!.env.production.example
 
 # Frontend
 frontend/node_modules/
 frontend/dist/
+frontend/.bundle-secret-check/
+frontend/.vite/
 
 # Docs / misc
 *.md

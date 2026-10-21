@@ -150,12 +150,33 @@ kept separate.
 
 ## Deployment
 
+### Development
+
 - `backend/Dockerfile` — Python 3.12, dependencies installed reproducibly from
   `uv.lock`, runs as a non-root user, includes a healthcheck.
 - `frontend/Dockerfile` — Node 22, `npm ci`, Vite dev server.
 - `docker-compose.yml` — dev stack (`docker compose up --build`), requires the
-  Compose v2 plugin.
+  Compose v2 plugin. Source trees are bind-mounted for hot reload.
 
-For production, build the frontend (`npm run build`) and serve `dist/` from a
-static server/reverse proxy in front of the backend, and set
-`ENVIRONMENT=production` with a networked database and a strong `SECRET_KEY`.
+### Production
+
+- `frontend/Dockerfile.prod` — multi-stage: `npm ci` + `vite build` in a Node
+  stage, then the compiled `dist/` served by `nginx:1.27-alpine`. No Node and no
+  application source ship at runtime.
+- `backend/Dockerfile` — reused unchanged; still non-root, still installed from
+  `uv.lock`.
+- `docker-compose.prod.yml` — production stack: frontend (nginx) + backend +
+  PostgreSQL, no bind mounts, backend/DB not published to the host. Only the
+  frontend port is exposed, bound to `127.0.0.1` by default.
+- `scripts/build-prod-images.sh` — builds images tagged
+  `ghcr.io/furkhad/qshield-twin-{backend,frontend}:<tag>` locally, so the same
+  Compose file works before and after GHCR publishing (nothing is pushed).
+- `frontend/nginx/default.conf.template` — serves the SPA, proxies `/api`
+  (REST + WebSocket) to the backend, and injects the `X-API-Token` header
+  **server-side** so the token never reaches the browser.
+
+The production deployment requires a networked database: `ENVIRONMENT=production`
+rejects SQLite, and the backend image ships the `psycopg` 3 driver. The token
+injected by the proxy is a deployment-level gate, **not** user authentication.
+See `docs/DEPLOYMENT.md` for the full flow, secrets, persistence and the list of
+things that are deliberately **not** claimed as production-ready.
