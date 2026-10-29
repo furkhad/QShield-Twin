@@ -82,3 +82,20 @@ def test_security_status_frontend_contract():
     assert "detection_accuracy" in analytics
     assert "confusion_matrix" in analytics
     assert analytics["detector"]["versions"] == ["ghost-detector/2.0"]
+
+
+def test_entrypoint_parity_routes():
+    """Both backend.main:app and backend.app.main:app expose equivalent apps."""
+    # Check they are FastAPI instances
+    from fastapi import FastAPI
+
+    import backend.app.main
+    import backend.main
+    assert isinstance(backend.main.app, FastAPI)
+    assert isinstance(backend.app.main.app, FastAPI)
+    # Both created by create_app
+    paths1 = set(r.path for r in backend.main.app.routes if hasattr(r, 'path'))
+    paths2 = set(r.path for r in backend.app.main.app.routes if hasattr(r, 'path'))
+    # Should be equivalent
+    assert paths1 == paths2
+    assert len(paths1) > 0

@@ -124,3 +124,55 @@ def test_websocket_open_when_no_token_configured():
         with client.websocket_connect("/api/v1/ws/stream") as ws:
             ws.send_text("hi")
             assert ws.receive_text() == "ack:hi"
+
+
+def test_access_control_overview_requires_token_when_configured():
+    """Sensitive endpoint /api/v1/security/access-control/overview requires token."""
+    app = create_app(_settings(api_token="s3cret-token"))
+    client = TestClient(app)
+    assert client.get("/api/v1/security/access-control/overview").status_code == 401
+    assert client.get("/api/v1/security/access-control/overview", headers={"X-API-Token": "bad"}).status_code == 401
+    r = client.get("/api/v1/security/access-control/overview", headers={"X-API-Token": "s3cret-token"})
+    assert r.status_code == 200
+
+
+def test_public_endpoints_remain_open_with_token_configured():
+    app = create_app(_settings(api_token="s3cret-token"))
+    client = TestClient(app)
+    assert client.get("/api/v1/health").status_code == 200
+    assert client.get("/api/v1/status").status_code == 200
+    assert client.get("/api/v1/version").status_code == 200
+
+
+def test_websocket_event_delivery_via_orchestrator():
+    """A real security event is pushed to a connected WebSocket client."""
+    app = create_app(Settings(environment="test"))
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/ws/stream") as ws:
+            ws.send_text("ping")
+            assert ws.receive_text() == "ack:ping"
+
+            resp = client.post(
+                "/api/v1/security/demo/access-control",
+                json={"legitimate_count": 2, "ghost_count": 1},
+            )
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "ok"
+
+            event = ws.receive_json()
+            assert event["type"] == "security_event"
+            payload = event["payload"]
+            assert payload["event_type"] in {"device_join", "packet_verified"}
+            assert payload.get("device_id") or payload.get("device")
+
+            # Drain at least one join event so the assertion is not dependent on
+            # the first packet event in the queue.
+            join_event = None
+            for _ in range(10):
+                candidate = ws.receive_json()["payload"]
+                if candidate.get("event_type") == "device_join":
+                    join_event = candidate
+                    break
+            assert join_event is not None
+            assert join_event["decision"] in {"accept", "monitor", "challenge", "reject", "blacklist"}

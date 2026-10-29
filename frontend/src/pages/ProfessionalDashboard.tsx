@@ -178,6 +178,10 @@ export default function ProfessionalDashboard() {
   const acceptanceRate = state.overview.total_devices > 0
     ? state.overview.accepted_devices / state.overview.total_devices
     : 0
+  const legitimateDevices = state.devices.filter((device) => device.legitimate === true)
+  const legitimateAcceptance = legitimateDevices.length > 0
+    ? legitimateDevices.filter((device) => device.security_decision === 'accept' || device.security_decision === 'monitor').length / legitimateDevices.length
+    : 0
 
   const averageTrust = state.trust.average_trust ?? performance.average_trust_score ?? 0
 
@@ -197,7 +201,7 @@ export default function ProfessionalDashboard() {
       const response = await fetch('/api/v1/security/demo/access-control', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ legitimate_count: 100, ghost_count: 20 }),
+        body: JSON.stringify({ legitimate_count: 10, ghost_count: 2 }),
       })
       const json = await response.json()
       if (json.status !== 'ok') {
@@ -245,7 +249,7 @@ export default function ProfessionalDashboard() {
               <Sparkles size={16} className="text-cyan-300" /> Live access-control demo
             </div>
             <p className="text-sm text-slate-400">
-              Runs 100 legitimate devices and 20 simulated ghost identities through the existing security pipeline.
+              Runs 10 legitimate devices and 2 simulated ghost identities through the existing security pipeline.
             </p>
             <button
               onClick={runDemo}
@@ -432,7 +436,7 @@ export default function ProfessionalDashboard() {
             <MetricTile label="Precision" value={formatPercent(detection.precision)} icon={<ShieldCheck size={16} />} />
             <MetricTile label="Recall" value={formatPercent(detection.recall)} icon={<TrendingUp size={16} />} />
             <MetricTile label="F1 score" value={formatPercent(detection.f1_score)} icon={<CheckCircle2 size={16} />} />
-            <MetricTile label="Legitimate acceptance" value={formatPercent(acceptanceRate)} icon={<Wifi size={16} />} />
+            <MetricTile label="Legitimate acceptance" value={formatPercent(legitimateAcceptance)} icon={<Wifi size={16} />} />
             <MetricTile label="False rejection count" value={detection.false_negatives ?? 0} icon={<AlertTriangle size={16} />} />
           </div>
 

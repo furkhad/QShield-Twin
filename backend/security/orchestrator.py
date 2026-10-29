@@ -97,7 +97,10 @@ class SecurityOrchestrator:
         self.proximity = ProofOfProximityEngine(distance_tolerance_m=10.0)
         self.pqc = SimulatedLatticeCrypto(algorithm="simulated-ntru")
         self.trust = TrustEngine()
-        self.ledger = ShardedLedger(shards=8)
+        # The operational orchestrator always uses durable storage. A storage
+        # failure must surface (LedgerPersistenceError) instead of silently
+        # downgrading to an in-memory ledger.
+        self.ledger = ShardedLedger(shards=8, persist=True)
         self.analytics = AnalyticsEngine()
         # Feature-based Sybil/ghost detector (replaces the former name-token
         # heuristic). It consumes only observable telemetry, never scenario labels.
@@ -144,7 +147,7 @@ class SecurityOrchestrator:
         self.proximity = ProofOfProximityEngine(distance_tolerance_m=10.0)
         self.pqc = SimulatedLatticeCrypto(algorithm="simulated-ntru")
         self.trust = TrustEngine()
-        self.ledger = ShardedLedger(shards=8)
+        self.ledger = ShardedLedger(shards=8, persist=True)
         self.analytics = AnalyticsEngine()
         self.detector = GhostDetector()
         self.processed_joins = 0

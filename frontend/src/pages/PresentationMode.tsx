@@ -347,11 +347,11 @@ export default function PresentationMode() {
             <div className="bg-slate-800/50 p-6 rounded-lg border border-slate-600">
               <h4 className="font-semibold text-slate-100 mb-3">Key Findings</h4>
               <ul className="space-y-2 text-slate-300 text-sm">
-                <li>✓ All legitimate devices accepted with high confidence</li>
-                <li>✓ Sybil attack detected with precision: {results.detection_metrics?.precision ? `${Math.round(results.detection_metrics.precision * 100)}%` : 'N/A'}</li>
-                <li>✓ Trust scoring system correctly identified malicious nodes</li>
-                <li>✓ Proof-of-Proximity verification successful</li>
-                <li>✓ Sharded ledger maintained consistency across all entries</li>
+                <li>Scenario executed through the backend security pipeline.</li>
+                <li>Detection precision reported by this run: {results.detection_metrics?.precision ? `${Math.round(results.detection_metrics.precision * 100)}%` : 'N/A'}</li>
+                <li>Ghost identities spawned: {results.ghost_nodes?.total ?? 0}; inspect the dashboard for per-device decisions.</li>
+                <li>Trust and proximity figures come from the scenario response, not from this animated timeline.</li>
+                <li>Ledger integrity is not verified by this screen; use the ledger integrity API.</li>
               </ul>
             </div>
           </motion.div>

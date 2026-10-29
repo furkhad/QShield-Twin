@@ -22,11 +22,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Tuple
+
+from backend.database import SessionLocal, init_db
+from backend.models.ledger import LedgerEntry as DBLedgerEntry
+
+logger = logging.getLogger(__name__)
+
+
+class LedgerPersistenceError(RuntimeError):
+    """Raised when a persistent ledger cannot initialize, restore, or write.
+
+    A persistent operational ledger must never silently fall back to in-memory
+    storage: callers would then report a record as stored even though it would
+    not survive a restart.
+    """
 
 
 @dataclass
@@ -74,20 +89,153 @@ class ShardedLedger:
     :meth:`verify_integrity` recomputes the chain to detect tampering.
     """
 
-    def __init__(self, shards: int = 8):
+    def __init__(self, shards: int = 8, persist: bool = False):
         if shards < 1:
             raise ValueError("shard count must be >= 1")
         self.shard_count = shards
         self.shards: Dict[int, List[LedgerEntry]] = {i: [] for i in range(shards)}
-        self.device_index: Dict[str, int] = defaultdict(int)  # device_id -> entry count
+        self.device_index: Dict[str, List[LedgerEntry]] = defaultdict(list)
         self._last_hash: Dict[int, str] = {i: "" for i in range(shards)}
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        self._persist = persist
+        if self._persist:
+            self._restore_from_db()
 
     def _shard_for(self, device_id: str) -> int:
         """Determine which shard a device belongs to using consistent hashing."""
 
         h = hashlib.sha256(device_id.encode()).digest()
         return h[0] % self.shard_count
+
+    def _restore_from_db(self) -> None:
+        """Create the schema if needed and restore the persisted hash chains.
+
+        Restoration is deliberately strict. Missing tables, unreadable rows,
+        invalid shard ids or malformed payloads raise
+        :class:`LedgerPersistenceError` instead of silently starting with a
+        partial (or empty) in-memory ledger.
+        """
+
+        try:
+            init_db()
+        except Exception as exc:  # noqa: BLE001 - normalize storage failures
+            raise LedgerPersistenceError(
+                "Could not initialize the ledger database schema"
+            ) from exc
+
+        session = SessionLocal()
+        try:
+            # Ordering by shard first keeps every per-shard hash chain in the
+            # exact order in which it was written. ``created_at`` is recorded at
+            # insert time and ``id`` is only a deterministic tie-breaker.
+            db_entries = (
+                session.query(DBLedgerEntry)
+                .order_by(
+                    DBLedgerEntry.shard_id,
+                    DBLedgerEntry.created_at,
+                    DBLedgerEntry.id,
+                )
+                .all()
+            )
+
+            seen_hashes: set[tuple[int, str]] = set()
+            for db_e in db_entries:
+                if db_e.shard_id is None or not (0 <= db_e.shard_id < self.shard_count):
+                    raise LedgerPersistenceError(
+                        f"Ledger row {db_e.id} has invalid shard_id {db_e.shard_id!r}"
+                    )
+                if not db_e.payload:
+                    raise LedgerPersistenceError(
+                        f"Ledger row {db_e.id} has an empty payload"
+                    )
+                try:
+                    data = json.loads(db_e.payload)
+                except (TypeError, ValueError) as exc:
+                    raise LedgerPersistenceError(
+                        f"Ledger row {db_e.id} contains invalid JSON"
+                    ) from exc
+                if not isinstance(data, dict):
+                    raise LedgerPersistenceError(
+                        f"Ledger row {db_e.id} payload is not a JSON object"
+                    )
+
+                # New entries store the complete dataclass as JSON. Evidence-only
+                # payloads from older data are tolerated for backwards
+                # compatibility, but their stored hash is still preserved so
+                # verification can report any resulting mismatch.
+                if "device_id" in data and "evidence" in data:
+                    entry = LedgerEntry(
+                        device_id=data.get("device_id", ""),
+                        accepted=data.get("accepted", True),
+                        timestamp=data.get("timestamp", 0.0),
+                        reason=data.get("reason", ""),
+                        evidence=data.get("evidence") or {},
+                        blacklisted=data.get("blacklisted", False),
+                        shard_id=db_e.shard_id,
+                    )
+                else:
+                    entry = LedgerEntry(
+                        device_id=data.get("device_id", ""),
+                        accepted=data.get("accepted", True),
+                        timestamp=data.get("timestamp", 0.0),
+                        reason=data.get("reason", ""),
+                        evidence=data,
+                        blacklisted=data.get("blacklisted", False),
+                        shard_id=db_e.shard_id,
+                    )
+                entry.prev_hash = db_e.previous_hash or ""
+                # Preserve the stored hash. Recomputing it here would hide
+                # tampering from verify_integrity().
+                entry.entry_hash = db_e.entry_hash or ""
+
+                # A row can only be restored once per shard. This keeps a
+                # restart idempotent even if a stale duplicate row exists.
+                key = (entry.shard_id, entry.entry_hash)
+                if key in seen_hashes:
+                    logger.warning(
+                        "Skipping duplicate ledger row %s for shard %s",
+                        db_e.id,
+                        entry.shard_id,
+                    )
+                    continue
+                seen_hashes.add(key)
+
+                self.shards[entry.shard_id].append(entry)
+                self.device_index[entry.device_id].append(entry)
+                self._last_hash[entry.shard_id] = entry.entry_hash
+        except LedgerPersistenceError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - normalize storage failures
+            raise LedgerPersistenceError(
+                "Could not restore the persisted ledger entries"
+            ) from exc
+        finally:
+            session.close()
+
+    def _persist_entry(self, entry: LedgerEntry) -> None:
+        """Durably write a single entry, raising on any storage failure."""
+
+        if not self._persist:
+            return
+        session = SessionLocal()
+        try:
+            evidence_json = json.dumps(asdict(entry), default=str)
+            db_entry = DBLedgerEntry(
+                shard_id=entry.shard_id,
+                entry_type="verification",
+                payload=evidence_json,
+                entry_hash=entry.entry_hash,
+                previous_hash=entry.prev_hash,
+            )
+            session.add(db_entry)
+            session.commit()
+        except Exception as exc:  # noqa: BLE001 - normalize storage failures
+            session.rollback()
+            raise LedgerPersistenceError(
+                f"Could not persist ledger entry for device {entry.device_id!r}"
+            ) from exc
+        finally:
+            session.close()
 
     @staticmethod
     def _compute_hash(entry: LedgerEntry) -> str:
@@ -129,9 +277,12 @@ class ShardedLedger:
         with self.lock:
             entry.prev_hash = self._last_hash[shard_id]
             entry.entry_hash = self._compute_hash(entry)
+            # Persist first. If durable storage fails, the in-memory chain and
+            # its head hash must not advance past what was actually stored.
+            self._persist_entry(entry)
             self.shards[shard_id].append(entry)
             self._last_hash[shard_id] = entry.entry_hash
-            self.device_index[device_id] += 1
+            self.device_index[device_id].append(entry)
 
         return entry
 
